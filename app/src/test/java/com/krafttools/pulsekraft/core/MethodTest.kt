@@ -106,6 +106,22 @@ class MethodTest {
         ).joinToString(" ")
 
         assertTrue("must not discard outliers", text.contains("No samples are discarded"))
+        // The aggregation statement once said "Median of per-interval
+        // rates" while the code had been changed months earlier to
+        // report goodput over the measured window, precisely because the
+        // median reads high. Every other promise in this file was
+        // checked; this one was only checked for the words "goodput",
+        // which were present in the same sentence. A disclosure test
+        // that greps for vocabulary rather than for the claim is a test
+        // that cannot catch the claim going stale.
+        assertTrue(
+            "must name the window the figure is averaged over",
+            Method.AGGREGATION.contains("over the measured window"),
+        )
+        assertTrue(
+            "must not present the median of per-interval rates as the figure",
+            !Method.AGGREGATION.contains("Median of per-interval"),
+        )
         assertTrue("must not do best-of-N", text.contains("best-of-N"))
         assertTrue("must not apply an overhead fudge", text.contains("overhead correction"))
         assertTrue("must define goodput", text.contains("goodput"))
@@ -128,6 +144,44 @@ class MethodTest {
             val words = text.split(" ").count { it.isNotBlank() }
             assertTrue("$label is $words words", words <= 60)
         }
+    }
+
+    @Test
+    fun `the published statistic is the one the code actually computes`() {
+        // Ties the disclosure to behaviour rather than to wording.
+        //
+        // Three fast intervals and one slow one, the shape a socket
+        // buffer produces: a burst, a burst, a burst, then the wait for
+        // the next one. The median of those rates is 1000 Mbps and the
+        // average across the window is 775. If the headline ever went
+        // back to the median this would fail — which is the point. The
+        // sentence in AGGREGATION and the arithmetic in Rate have to be
+        // the same claim, and a test that only greps the string for
+        // vocabulary cannot know the difference.
+        val millis = 100L
+        fun sample(index: Int, megabytes: Int) = RateSample(
+            atNanos = index * millis * 1_000_000L,
+            bytes = megabytes * 1_048_576L,
+        )
+        val series = listOf(
+            sample(0, 0),
+            sample(1, 12),
+            sample(2, 24),
+            sample(3, 36),
+            // 1 MB in the last 100ms, where the others moved 12.
+            sample(4, 37),
+        )
+
+        val throughput = Rate.fromSamples(series, graceMillis = 0)!!
+
+        // 37 MiB across 400ms is 775 Mbps to the decimal the app uses.
+        assertEquals(775.0, throughput.averageMbps, 1.0)
+        // And the median of the same intervals is the higher figure the
+        // disclosure says it is not using.
+        assertTrue(
+            "the series must actually separate the two statistics",
+            throughput.medianMbps > throughput.averageMbps * 1.2,
+        )
     }
 
     @Test

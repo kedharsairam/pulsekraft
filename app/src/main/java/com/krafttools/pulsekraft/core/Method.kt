@@ -48,11 +48,12 @@ object Method {
      * (p10 to p90) is shown rather than collapsed into one figure.
      */
     const val AGGREGATION: String =
-        "Median of per-interval rates, taken after a fixed grace window. " +
-            "No samples are discarded as outliers, no best-of-N is taken, " +
-            "and no protocol-overhead correction is applied. The figure is " +
-            "application-level goodput: bytes the app received, not bytes " +
-            "on the wire."
+        "Throughput is goodput over the measured window: bytes actually " +
+            "received divided by the seconds that transfer took, after a fixed " +
+            "grace window. It is not the median of the per-interval rates, which " +
+            "would read high because a socket buffer arrives all at once. " +
+            "No samples are discarded as outliers, no best-of-N is taken, and no " +
+            "protocol-overhead correction is applied."
 
     /**
      * What the number is a measurement *of*, which is the part most apps
