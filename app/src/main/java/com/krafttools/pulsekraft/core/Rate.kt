@@ -4,14 +4,27 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * A cumulative reading: how many bytes had arrived, and when.
+ * A cumulative reading: how many bytes had arrived, and when — in
+ * **nanoseconds**, from [System.nanoTime].
  *
  * Cumulative rather than per-interval on purpose. Rate is a derivative,
  * and a derivative of a rounded counter is noisy. Differencing inside
  * the engine means one place decides how a rate is formed, and the
  * samples can be stored exactly as a reader loop produces them.
+ *
+ * The unit is not a detail. The first upload measurement on a real
+ * connection came out at 524.3 Mbps, which is precisely 65,536 bytes
+ * moving in one millisecond — the rate of a 64 KB buffer handed to
+ * [System.currentTimeMillis], whose resolution is a millisecond. Every
+ * sub-millisecond interval was being quantised to that one figure and
+ * then reported as a network speed. A clock with a coarser tick than
+ * the event cannot measure the event.
+ *
+ * [System.nanoTime] rather than elapsedRealtime: monotonic, unaffected
+ * by the user or the network changing the wall clock mid-test, and
+ * ticking at nanosecond resolution on every device this runs on.
  */
-data class RateSample(val atMillis: Long, val bytes: Long)
+data class RateSample(val atNanos: Long, val bytes: Long)
 
 /**
  * A throughput figure, and everything needed to argue with it.
@@ -24,6 +37,23 @@ data class RateSample(val atMillis: Long, val bytes: Long)
  * p90 over p10, a single number for "how uneven was this".
  */
 data class Throughput(
+    /**
+     * Goodput over the measured window. **This is the headline.**
+     *
+     * Not the median of the per-interval rates, which is what the first
+     * version used, and the difference is not academic. With an 8 MB
+     * socket buffer the reads come back in bursts — a full buffer hands
+     * over 64 KB instantly, then the next read waits for the network —
+     * so the interval rates are bimodal and their median sits far above
+     * what the line actually delivered. A real transfer on this device
+     * produced interval rates from 56 to 901 Mbps with a median of 414,
+     * while the whole 26 MB arrived in 2.3 seconds, which is 91 Mbps.
+     *
+     * Total bytes over total time is the definition of throughput. The
+     * spread is still reported, because the *shape* of a transfer is
+     * worth knowing; it is just not the answer to "how fast".
+     */
+    val averageMbps: Double,
     val medianMbps: Double,
     val meanMbps: Double,
     val p10Mbps: Double,
@@ -54,9 +84,24 @@ data class Throughput(
 object Rate {
 
     /** Decimal megabits per second, from bytes over milliseconds. */
-    fun mbps(bytes: Long, millis: Long): Double {
-        if (bytes <= 0L || millis <= 0L) return 0.0
-        return bytes.toDouble() * 8.0 / millis.toDouble() * 1000.0 / 1_000_000.0
+    fun mbps(bytes: Long, millis: Long): Double = mbpsFromNanos(bytes, millis * 1_000_000L)
+
+    /**
+     * Decimal megabits per second, from bytes over nanoseconds.
+     *
+     * The nanosecond form is the one the engine actually uses, and it
+     * exists because the millisecond form is not safe to reach by
+     * dividing. Converting a 400-microsecond interval to whole
+     * milliseconds truncates it to zero, `mbps` rejects a zero duration,
+     * and the interval is reported as 0 Mbps — which dragged a real
+     * 100 Mbps download down to a median of 0.0 with a p10 of 0 and a
+     * spread of infinity. Truncation that only shows up as a plausible
+     * looking wrong number is the worst kind.
+     */
+    fun mbpsFromNanos(bytes: Long, nanos: Long): Double {
+        if (bytes <= 0L || nanos <= 0L) return 0.0
+        // bytes * 8 bits, over nanos/1e9 seconds, in units of 1e6.
+        return bytes.toDouble() * 8.0 * 1_000.0 / nanos.toDouble()
     }
 
     /**
@@ -113,19 +158,28 @@ object Rate {
     ): Throughput? {
         if (samples.size < 2) return null
 
+        val graceNanos = graceMillis * 1_000_000L
         val intervals = ArrayList<Double>(samples.size - 1)
+        // Accumulated across the kept intervals only, so the average is
+        // taken over exactly the window the grace window defined and
+        // not over the transfer that was thrown away.
+        var windowBytes = 0L
+        var windowNanos = 0L
         for (i in 1 until samples.size) {
             val previous = samples[i - 1]
             val current = samples[i]
-            val elapsed = current.atMillis - previous.atMillis
+            val elapsedNanos = current.atNanos - previous.atNanos
             // A non-advancing clock or a non-advancing counter yields no
             // information. Skipping rather than dividing keeps one bad
             // sample from poisoning the whole run.
-            if (elapsed <= 0L || current.bytes < previous.bytes) continue
-            if (previous.atMillis < graceMillis) continue
-            intervals += mbps(current.bytes - previous.bytes, elapsed)
+            if (elapsedNanos <= 0L || current.bytes < previous.bytes) continue
+            if (previous.atNanos < graceNanos) continue
+            val delta = current.bytes - previous.bytes
+            intervals += mbpsFromNanos(delta, elapsedNanos)
+            windowBytes += delta
+            windowNanos += elapsedNanos
         }
-        if (intervals.isEmpty()) return null
+        if (intervals.isEmpty() || windowNanos <= 0L) return null
 
         val sorted = intervals.sorted()
         val first = samples.first()
@@ -133,13 +187,14 @@ object Rate {
         val totalBytes = (last.bytes - first.bytes).coerceAtLeast(0L)
 
         return Throughput(
+            averageMbps = mbpsFromNanos(windowBytes, windowNanos),
             medianMbps = percentile(sorted, 0.50),
             meanMbps = sorted.average(),
             p10Mbps = percentile(sorted, 0.10),
             p90Mbps = percentile(sorted, 0.90),
             sampleCount = sorted.size,
             totalBytes = totalBytes,
-            measuredMillis = (last.atMillis - first.atMillis).coerceAtLeast(1L),
+            measuredMillis = ((last.atNanos - first.atNanos) / 1_000_000L).coerceAtLeast(1L),
             discardedByGraceMillis = graceMillis,
         )
     }

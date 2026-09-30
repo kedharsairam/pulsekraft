@@ -133,6 +133,29 @@ object Buffer {
     }
 }
 
+/**
+ * Why a transfer cannot be turned into a number.
+ *
+ * Every case produces a confident wrong answer if it is ignored:
+ *
+ * - **A non-2xx status.** LibreSpeed shipped years with an upload bug
+ *   where an HTTP error response still let the client start a
+ *   replacement upload, and the reported speed was inflated. An error
+ *   body is not throughput.
+ * - **A body shorter than it declared.** The transfer was cut. The bytes
+ *   that arrived divided by the time they took is a rate the line never
+ *   sustained.
+ * - **A missing length and no chunking.** There is no way to know the
+ *   transfer is finished, so there is no way to time it honestly.
+ */
+enum class TransferRejection(val explanation: String) {
+    NOT_SUCCESS("the edge refused the transfer, and an error body is not throughput"),
+    TRUNCATED("the transfer ended before the length it declared"),
+    UNFRAMED("the response did not say how long it was, so it cannot be timed honestly"),
+    TIMED_OUT("the transfer did not finish in the time allowed"),
+    NO_CONNECTION("the edge could not be reached"),
+}
+
 /** A whole test's result, and the honesty that comes with it. */
 data class TestReport(
     val download: Throughput?,
@@ -144,7 +167,39 @@ data class TestReport(
     val volume: Volume,
     val edgeHost: String,
     val protocolNote: String,
+    /**
+     * The receive buffer the kernel actually granted, in bytes.
+     *
+     * Not the one requested. `SO_RCVBUF` is a hint the kernel may
+     * refuse, and it allocates twice what is asked for, so this is the
+     * only figure that describes what the app was actually capable of
+     * — and therefore the only one that can be compared honestly
+     * against a measured result.
+     */
+    val grantedReceiveBufferBytes: Int = 0,
+    /** Set when a transfer was refused or cut short. Null when sound. */
+    val rejectedBecause: TransferRejection? = null,
 ) {
+    /**
+     * Whether the download figure may be this app's buffer rather than
+     * the user's line.
+     *
+     * Only answerable once there is both a result and an idle latency to
+     * compare it against, which is why it is a method and not a field.
+     * Null means "cannot tell", which is different from "no".
+     */
+    fun downloadMayBeBufferLimited(): Boolean? {
+        val measured = download?.medianMbps ?: return null
+        val rtt = idleLatency?.medianMs ?: return null
+        return Buffer.mayBeBufferLimited(measured, grantedReceiveBufferBytes, rtt)
+    }
+
+    /** The same question of the upload figure. */
+    fun uploadMayBeBufferLimited(): Boolean? {
+        val measured = upload?.medianMbps ?: return null
+        val rtt = idleLatency?.medianMs ?: return null
+        return Buffer.mayBeBufferLimited(measured, grantedReceiveBufferBytes, rtt)
+    }
     /**
      * The bufferbloat index, preferring the download phase.
      *

@@ -125,7 +125,20 @@ data class TestProfile(
     val name: String,
     val graceMillis: Long,
     val sampleIntervalMillis: Long,
+    /** Hard ceiling on bytes, so a fast link cannot spend a month of data. */
     val targetBytes: Long,
+    /**
+     * How long to keep measuring after the grace window closes.
+     *
+     * This, not the byte count, is what makes the profile work on a
+     * fast link. The first light profile moved 8 MB, which on a 100 Mbps
+     * connection takes 670 ms — less than the one-second grace window —
+     * so every sample was correctly discarded as slow start and the app
+     * reported no download figure at all. Measuring against a clock
+     * instead means a fast link gets a real window and a slow one gets
+     * fewer bytes, which is the opposite of what a byte cap does.
+     */
+    val measureMillis: Long,
     val idleSamples: Int,
     val loadedSamples: Int,
     val stabilitySeconds: Int,
@@ -141,13 +154,17 @@ object Profiles {
         name = "Light",
         // One second is enough to leave slow start behind on any
         // plausible path while costing little of a short test.
-        graceMillis = 1_000,
+        // Half a second is ample to clear slow start on a 20 ms path,
+        // which roughly doubles its rate every round trip, and it leaves
+        // more of the transfer inside the measured window.
+        graceMillis = 500,
         sampleIntervalMillis = 100,
-        // 8 MB each way. Large enough that a 100 Mbps line is in steady
-        // state for over a second after the grace window; small enough
-        // that a full test costs about 20 MB, which is a rounding error
-        // against a monthly allowance and survivable on a bad day.
-        targetBytes = 8L * 1024 * 1024,
+        // Three seconds of steady state, and a ceiling so that a very
+        // fast link cannot turn a light test into a very large one. When
+        // the ceiling binds first, the result says how short the window
+        // actually was rather than implying three seconds of it.
+        measureMillis = 3_000,
+        targetBytes = 25L * 1024 * 1024,
         idleSamples = 12,
         loadedSamples = 10,
         stabilitySeconds = 15,
@@ -158,9 +175,10 @@ object Profiles {
         // A longer window, because a gigabit link takes longer to reach
         // steady state than a 50 Mbps one and the test should not report
         // a number the link never actually sustained.
-        graceMillis = 2_000,
+        graceMillis = 1_000,
         sampleIntervalMillis = 100,
-        targetBytes = 50L * 1024 * 1024,
+        measureMillis = 8_000,
+        targetBytes = 100L * 1024 * 1024,
         idleSamples = 20,
         loadedSamples = 20,
         stabilitySeconds = 30,

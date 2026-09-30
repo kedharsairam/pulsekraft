@@ -16,13 +16,23 @@ import org.junit.Test
 class MethodTest {
 
     @Test
-    fun `the light profile is the default and is genuinely light`() {
+    fun `the light profile is bounded by time first and bytes second`() {
         val light = Profiles.of(Volume.LIGHT)
-        // About 20 MB for a full run, which is the number a user needs
-        // before agreeing to spend it on mobile data.
+        // The bound that actually governs a run is the clock: three
+        // seconds of measurement after the grace window. The byte
+        // ceiling only binds above roughly 57 Mbps, so a slow connection
+        // spends far less than the ceiling and a fast one spends exactly
+        // it — which is the opposite of how a byte cap behaves, and the
+        // reason the cap is a ceiling rather than the target.
+        assertEquals(3_000L, light.measureMillis)
+        assertEquals(25L * 1024 * 1024, light.targetBytes)
+
+        // The arithmetic has to agree with that claim, or the "light"
+        // label is decoration: 25 MB in three seconds is 66 Mbps.
+        val ceilingMbps = Rate.mbps(light.targetBytes, light.measureMillis)
         assertTrue(
-            "light profile should cost under 25MB, was ${light.estimatedBytes}",
-            light.estimatedBytes < 25L * 1024 * 1024,
+            "the byte ceiling should bind around 57-70 Mbps, was $ceilingMbps",
+            ceilingMbps in 60.0..75.0,
         )
     }
 
@@ -37,12 +47,21 @@ class MethodTest {
     }
 
     @Test
-    fun `the grace window is long enough to leave slow start behind`() {
-        // Sub-second is not enough on a high-latency path: slow start
-        // doubles per round trip, so a 200 ms path needs about a second
-        // to get anywhere near capacity.
-        assertTrue(Profiles.of(Volume.LIGHT).graceMillis >= 1_000L)
-        assertTrue(Profiles.of(Volume.FULL).graceMillis >= 2_000L)
+    fun `the grace window covers slow start and the socket buffer`() {
+        // Half a second is roughly 25 round trips on a 20 ms path, and
+        // TCP roughly doubles its rate every one of them — so by the end
+        // of the window the line is at capacity and anything still
+        // filling the socket buffer is behind it.
+        //
+        // The first version used a full second, which cost a second of
+        // every transfer and still failed the fast-link case for a
+        // different reason: 8 MB at 100 Mbps takes 670 ms, so the whole
+        // transfer fitted inside the window and there was nothing left
+        // to measure. Shortening the window fixed that, and the byte
+        // ceiling exists so a gigabit link cannot spend half a gigabyte
+        // to be measured.
+        assertTrue(Profiles.of(Volume.LIGHT).graceMillis >= 500L)
+        assertTrue(Profiles.of(Volume.FULL).graceMillis >= 1_000L)
     }
 
     @Test
