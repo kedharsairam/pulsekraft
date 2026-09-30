@@ -7,6 +7,47 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [0.1.2] — 2026-10-01
 
+The last two gaps, and one of them I had described as untestable.
+
+### Added
+
+- **The edge's contract, tested against the real edge.** A performance
+  figure cannot be asserted — it depends on the network, and a test that
+  did would fail for reasons unrelated to the code. The edge's *shape*
+  can be, and this app's method is built entirely on it: that
+  `__down?bytes=N` answers 200 with exactly N bytes and unchunked, that
+  `__up` answers 200 with `Content-Length: 0` and that empty reply is
+  the success, and that a large POST draws a `100 Continue` which is not
+  the answer. If any of that changed the app would report the wrong
+  thing and nothing else would notice. Six tests, skipped rather than
+  failed with no route.
+
+### Fixed
+
+- **A screen reader never heard what a test would cost.** The cost line
+  and the measurements list are not focusable, so TalkBack walked past
+  "About 25 MB of mobile data" and stopped on a control labelled only
+  "Run test". Found by enabling TalkBack and reading the accessibility
+  tree, which is a different exercise from asserting the labels exist —
+  the labels did exist, they were just not where a reader would go. The
+  control now says *"Run test. About 25 MB of mobile data."*
+- **A refused control was absent from the accessibility tree entirely.**
+  It rendered a bare mark and returned early, so the one moment a person
+  most needs to hear what is wrong was the one moment a screen reader
+  found nothing. Silence is not the same as nothing to do here.
+- A double full stop in the spoken refusal: "…for the full test..".
+
+### Known gaps
+
+- Which data centre answers, and its real latency under load. No test can
+  pin that, and a test that mocked it would be testing the mock.
+- TalkBack's speech does not reach logcat, so what is verified is the
+  tree it reads, not how it sounds. That last judgement is a human's.
+
+---
+
+## [0.1.1] — 2026-10-01
+
 Fixes found by auditing a finished v0.1.0 against its own documentation.
 
 ### Fixed
@@ -76,39 +117,6 @@ Rotating the phone mid-test used to lose the run entirely.
   `100 Continue` being skipped, and a closed port being refused. The
   previous note said this needed a certificate the project did not have;
   generating one takes a second.
-
-### Added
-
-- **The edge's contract, tested against the real edge.** A performance
-  figure cannot be asserted — it depends on the network, and a test that
-  did would fail for reasons unrelated to the code. The edge's *shape*
-  can be, and this app's method is built entirely on it: that
-  `__down?bytes=N` answers 200 with exactly N bytes and unchunked, that
-  `__up` answers 200 with `Content-Length: 0` and that empty reply is
-  the success, and that a large POST draws a `100 Continue` which is not
-  the answer. If any of that changed the app would report the wrong
-  thing and nothing else would notice. Six tests, skipped rather than
-  failed with no route.
-
-### Fixed
-
-- **A screen reader never heard what a test would cost.** The cost line
-  and the measurements list are not focusable, so TalkBack walked past
-  "About 25 MB of mobile data" and stopped on a control labelled only
-  "Run test". Found by enabling TalkBack and reading the accessibility
-  tree, which is a different exercise from asserting the labels exist —
-  the labels did exist, they were just not where a reader would go.
-  The control now says *"Run test. About 25 MB of mobile data."*
-- **A refused control was absent from the accessibility tree entirely.**
-  It rendered a bare mark and returned early, so the one moment a
-  person most needs to hear what is wrong was the one moment a screen
-  reader found nothing. Silence is not the same as nothing to do here.
-- A double full stop in the spoken refusal: "…for the full test..".
-
-### Known gaps
-
-- Which data centre answers, and its real latency under load. No test can
-  pin that, and a test that mocked it would be testing the mock.
 
 ## [0.1.0] — 2026-09-30
 
