@@ -34,8 +34,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +49,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
@@ -57,10 +60,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.unit.sp
 import com.krafttools.pulsekraft.BuildConfig
 import com.krafttools.pulsekraft.core.Bufferbloat
 import com.krafttools.pulsekraft.core.Latency
+import com.krafttools.pulsekraft.core.Link
+import com.krafttools.pulsekraft.core.LinkState
+import com.krafttools.pulsekraft.core.Permission
+import com.krafttools.pulsekraft.core.Policy
 import com.krafttools.pulsekraft.core.Method
 import com.krafttools.pulsekraft.core.Profiles
 import com.krafttools.pulsekraft.core.TestReport
@@ -70,8 +76,12 @@ import com.krafttools.pulsekraft.core.Throughput
 import com.krafttools.pulsekraft.net.LiveState
 import com.krafttools.pulsekraft.net.Phase
 import com.krafttools.pulsekraft.net.Probe
+import com.krafttools.pulsekraft.net.Reachability
 import com.krafttools.pulsekraft.net.Reading
 import com.krafttools.pulsekraft.ui.theme.PulsePalette
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 /**
@@ -93,8 +103,39 @@ import kotlin.math.max
 /** One completed phase, reduced to the single figure worth keeping. */
 private data class PhaseFigure(val phase: Phase, val figure: String)
 
+/**
+ * What to call a phase in a list of results.
+ *
+ * The running screen says "Watching for spikes" because something is
+ * happening and a sentence is right. A list of finished figures is a
+ * table, and a table does not contain imperatives — it said "Watching
+ * for spikes   213 ms", which is a thing being done next to a thing
+ * that already happened.
+ */
+private fun Phase.asNoun(): String = when (this) {
+    Phase.CONNECTING -> "Connecting"
+    Phase.IDLE_LATENCY -> "Idle latency"
+    Phase.DOWNLOAD -> "Download"
+    Phase.UPLOAD -> "Upload"
+    Phase.STABILITY -> "Stability"
+    Phase.DONE -> "Done"
+}
+
 private sealed interface MeasureState {
-    data object Idle : MeasureState
+    /**
+     * Waiting to start.
+     *
+     * `refusal` is set when the pre-flight check declined to run, and
+     * is why the app holds the reason on the idle screen instead of
+     * opening a dialog: the answer belongs beside the button that
+     * produced it, and a person who is offline should see why the app
+     * is not working in the place where they would press it.
+     */
+    data class Idle(
+        val volume: Volume = Volume.LIGHT,
+        val refusal: String? = null,
+        val link: LinkState = LinkState(),
+    ) : MeasureState
     /**
      * A finished phase and the figure it produced.
      *
@@ -106,10 +147,26 @@ private sealed interface MeasureState {
     data class Running(
         val live: LiveState?,
         val phase: Phase,
+        val volume: Volume = Volume.LIGHT,
         val done: List<PhaseFigure> = emptyList(),
     ) : MeasureState
     data class Done(val report: TestReport) : MeasureState
     data class Failed(val what: String, val why: String) : MeasureState
+
+    /**
+     * Stopped by the person.
+     *
+     * Distinct from a failure on purpose. A cancelled run has figures
+     * for the phases that finished and nothing usable for the rest, and
+     * showing it as an error would be wrong — they did the stopping.
+     * A partial report still renders, with a line saying so, because the
+     * download figure from a cancelled run is a real measurement of a
+     * real transfer and throwing it away would be its own kind of lie.
+     */
+    data class Stopped(
+        val done: List<PhaseFigure>,
+        val volume: Volume,
+    ) : MeasureState
 }
 
 /**
@@ -126,14 +183,102 @@ private val Tabular = TextStyle(fontFeatureSettings = "tnum")
 
 @Composable
 fun MeasureScreen(modifier: Modifier = Modifier) {
-    var state by remember { mutableStateOf<MeasureState>(MeasureState.Idle) }
+    var state by remember { mutableStateOf<MeasureState>(MeasureState.Idle(Volume.LIGHT)) }
     var methodOpen by remember { mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
+    val context = LocalContext.current
+    val reach = remember(context) { Reachability(context) }
+
+    // The thread doing the measuring, so a running test can be stopped.
+    // A forty-five second run that cannot be cancelled is a run you sit
+    // through, and nothing else in this file matters if that is true.
+    var runner by remember { mutableStateOf<RunningTest?>(null) }
+    val scope = rememberCoroutineScope()
 
     // One tick per state change, not one per sample. A screen that
     // re-renders a hundred times a second is a screen that cannot be
     // read, and the hardware gets no say in how fast a person reads.
     var lastFrame = 0L
+
+    // The link is re-read whenever the screen comes to rest, and again
+    // at the moment the control is pressed. Not observed continuously:
+    // the two moments that matter are "what did the idle screen promise"
+    // and "is that promise still true", and a listener firing on every
+    // network change would cost more than it is worth for a figure that
+    // only has to be right when it is read.
+    suspend fun refreshLink() {
+        val link = withContext(Dispatchers.IO) { reach.current() }
+        val idle = state as? MeasureState.Idle ?: return
+        if (idle.link != link) {
+            state = idle.copy(
+                link = link,
+                // A refusal from the last press is about that press.
+                // Carrying it forward after the network changed would
+                // leave a message contradicting the screen it sits on.
+                refusal = null,
+            )
+        }
+    }
+    LaunchedEffect(Unit) { refreshLink() }
+
+    // Start a run. A named local rather than an argument list inside the
+    // `when`, because the three callbacks it hands the probe are the
+    // part of this screen worth reading and they were eight levels deep
+    // in a lambda argument.
+    fun startRun(volume: Volume) {
+        runner = runTest(
+            volume = volume,
+            onPhase = { phase ->
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                val previous = state as? MeasureState.Running
+                state = MeasureState.Running(
+                    live = null,
+                    phase = phase,
+                    volume = volume,
+                    done = previous?.closeOffPhase() ?: emptyList(),
+                )
+            },
+            onLive = { live ->
+                val now = System.currentTimeMillis()
+                if (now - lastFrame >= FRAME_MS) {
+                    lastFrame = now
+                    state = MeasureState.Running(
+                        live = live,
+                        phase = live.phase,
+                        volume = volume,
+                        done = (state as? MeasureState.Running)?.done ?: emptyList(),
+                    )
+                }
+            },
+            onFinish = { result ->
+                state = when {
+                    result.report != null -> MeasureState.Done(result.report)
+                    result.failure != null -> MeasureState.Failed(
+                        result.failure.what,
+                        result.failure.why,
+                    )
+                    // A null report and a null failure means the probe
+                    // was interrupted, which is what cancelling is.
+                    // Reporting that as a failure would blame the
+                    // network for something the person did.
+                    //
+                    // The phase in flight is folded in first. Cancelling
+                    // at the sixteen second mark discarded a finished
+                    // idle-latency measurement — the figure was in hand
+                    // and the screen said nothing had finished, which is
+                    // the same class of lie as publishing a number the
+                    // app cannot stand behind, just in the other
+                    // direction.
+                    else -> MeasureState.Stopped(
+                        done = (state as? MeasureState.Running)?.closeOffPhase()
+                            ?: emptyList(),
+                        volume = volume,
+                    )
+                }
+                runner = null
+            },
+        )
+    }
 
     Column(
         modifier = modifier
@@ -178,50 +323,64 @@ fun MeasureScreen(modifier: Modifier = Modifier) {
             label = "screen",
         ) { _ ->
         when (val current = state) {
-            MeasureState.Idle -> IdleBlock(
+            is MeasureState.Idle -> IdleBlock(
+                volume = current.volume,
+                link = current.link,
+                refusal = current.refusal,
+                onVolume = { volume ->
+                    // Choosing the heavier profile on a metered network
+                    // does not start anything; it just re-prices the
+                    // button, and the refusal text appears immediately
+                    // so the person knows before they press it.
+                    state = MeasureState.Idle(
+                        volume = volume,
+                        link = current.link,
+                        refusal = (Policy.decide(current.link, volume)
+                            as? Permission.Refuse)?.reason,
+                    )
+                },
                 onRun = {
                     lastFrame = 0L
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    runTest(
-                        onPhase = { phase ->
-                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            val previous = state as? MeasureState.Running
-                            state = MeasureState.Running(
-                                live = null,
-                                phase = phase,
-                                done = previous?.let {
-                                    it.closeOffPhase() ?: emptyList()
-                                } ?: emptyList(),
-                            )
-                        },
-                        onLive = { live ->
-                            val now = System.currentTimeMillis()
-                            if (now - lastFrame >= FRAME_MS) {
-                                lastFrame = now
-                                state = MeasureState.Running(
-                                    live = live,
-                                    phase = live.phase,
-                                    done = (state as? MeasureState.Running)?.done
-                                        ?: emptyList(),
-                                )
+                    val volume = current.volume
+                    scope.launch {
+                        // Read at the moment of the press, not from the
+                        // value the idle screen was built with. The
+                        // network can change while someone is looking at
+                        // a screen that says what it will cost, and the
+                        // promise has to be the one that holds.
+                        val link = withContext(Dispatchers.IO) { reach.current() }
+                        when (val decision = Policy.decide(link, volume)) {
+                            is Permission.Refuse -> {
+                                state = MeasureState.Idle(volume, decision.reason, link)
+                                return@launch
                             }
-                        },
-                        onFinish = { result ->
-                            val report = result.report
-                            state = if (report != null) {
-                                MeasureState.Done(report)
-                            } else {
-                                MeasureState.Failed(
-                                    result.failure?.what ?: "The test could not run",
-                                    result.failure?.why ?: "an unknown reason",
-                                )
-                            }
-                        },
-                    )
+                            // A warning does not stop the run. The cost
+                            // was on the idle screen in the same words
+                            // before the button was pressed, so the press
+                            // IS the agreement; a dialog restating it
+                            // would be one more tap to say the thing the
+                            // screen already said.
+                            else -> state = MeasureState.Idle(volume, null, link)
+                        }
+                        startRun(volume)
+                    }
                 },
             )
 
-            is MeasureState.Running -> RunningBlock(current)
+            is MeasureState.Running -> RunningBlock(current, onCancel = {
+                runner?.cancel()
+            })
+
+            is MeasureState.Stopped -> {
+                StoppedBlock(
+                    done = current.done,
+                    onAgain = {
+                        methodOpen = false
+                        state = MeasureState.Idle(current.volume)
+                    },
+                )
+            }
 
             is MeasureState.Failed -> {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -241,7 +400,12 @@ fun MeasureScreen(modifier: Modifier = Modifier) {
                     // you can measure once is a demo, not a tool.
                     onAgain = {
                         methodOpen = false
-                        state = MeasureState.Idle
+                        // The volume they chose is remembered, and the
+                        // link is re-read by the effect that runs on the
+                        // way back to idle. Going back to the default
+                        // profile here would silently discard a choice
+                        // they made on purpose.
+                        state = MeasureState.Idle(current.report.volume)
                     },
                 )
             }
@@ -252,17 +416,6 @@ fun MeasureScreen(modifier: Modifier = Modifier) {
         Footer()
     }
 }
-
-/**
- * The volume every run uses.
- *
- * Light by default, and the cost is stated on the idle screen before
- * anything is measured rather than discovered afterwards. It is a
- * constant rather than a setting because the Full profile is not
- * reachable from the interface at all yet, and a preference that
- * cannot be changed is a lie about the app having preferences.
- */
-private val CURRENT_VOLUME = Volume.LIGHT
 
 /** Ten frames a second. A number that updates faster is not read faster. */
 private const val FRAME_MS = 100L
@@ -284,19 +437,55 @@ private fun Footer() {
     }
 }
 
+/**
+ * Runs a test on its own thread and hands that thread back.
+ *
+ * Returning the thread is the whole reason this function changed shape.
+ * An earlier version returned Unit, which meant there was no handle on
+ * the work and therefore no way to stop it: a forty-five second run was
+ * something to sit through. Now the caller keeps the handle and
+ * interrupts it, and the probe treats an interrupt as a stop rather
+ * than as a fault.
+ *
+ * Every callback hops to the main thread on the way out. Compose state
+ * may only be written from one, and the probe emits from two of its
+ * own; dropping the hop is a crash rather than a glitch.
+ */
 private fun runTest(
+    volume: Volume,
     onPhase: (Phase) -> Unit,
     onLive: (LiveState) -> Unit,
     onFinish: (Probe.Result) -> Unit,
-) {
+): RunningTest {
     val main = android.os.Handler(android.os.Looper.getMainLooper())
-    Thread({
-        val result = Probe(volume = CURRENT_VOLUME).run(onPhase = onPhase, onLive = onLive)
-        // Every write to Compose state has to happen on the main thread,
-        // and the probe emits from two of its own. The hop is not
-        // optional and dropping it is a crash rather than a glitch.
-        main.post { onFinish(result) }
-    }, "pulsekraft-ui-driver").apply { isDaemon = true }.start()
+    fun hop(body: () -> Unit) = main.post(body)
+    val probe = Probe(volume = volume)
+    val thread = Thread({
+        val result = probe.run(
+            onPhase = { hop { onPhase(it) } },
+            onLive = { hop { onLive(it) } },
+        )
+        hop { onFinish(result) }
+    }, "pulsekraft-ui-driver").apply {
+        isDaemon = true
+        start()
+    }
+    return RunningTest(thread, probe)
+}
+
+/**
+ * A test in progress, and the only two things anyone can do to it.
+ *
+ * Both halves matter and neither is sufficient. The probe closes its
+ * sockets, which is what unblocks a read; the interrupt is what
+ * unblocks a sleep between samples. Calling only one leaves a cancel
+ * that appears to work on some phases and hangs on others.
+ */
+private class RunningTest(private val thread: Thread, private val probe: Probe) {
+    fun cancel() {
+        probe.cancel()
+        thread.interrupt()
+    }
 }
 
 /**
@@ -311,22 +500,29 @@ private fun runTest(
  * anything.
  */
 @Composable
-private fun IdleBlock(onRun: () -> Unit) {
-    val light = Profiles.of(CURRENT_VOLUME)
+private fun IdleBlock(
+    volume: Volume,
+    link: LinkState,
+    refusal: String?,
+    onVolume: (Volume) -> Unit,
+    onRun: () -> Unit,
+) {
+    val profile = Profiles.of(volume)
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Spacer(Modifier.height(24.dp))
-        PulsingControl(onRun)
+        Spacer(Modifier.height(16.dp))
+        VolumeSelector(volume, onVolume)
+        Spacer(Modifier.height(30.dp))
+
+        PulsingControl(onRun, enabled = refusal == null)
         Spacer(Modifier.height(30.dp))
 
         Text(
             // An instruction, because a disc with a mark inside it does
-            // not look like something you press. Naming the cost here
-            // rather than after the fact is the whole point of the
-            // Light profile.
+            // not look like something you press.
             text = "Tap to measure this connection",
             style = MaterialTheme.typography.titleMedium,
             color = PulsePalette.OnSurface,
@@ -334,19 +530,33 @@ private fun IdleBlock(onRun: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            // Dividing two Ints gives a Long, and a Long handed to %.0f
-            // throws at format time — a crash on the first frame, which
-            // no unit test reaches.
-            text = "Up to %.0f MB, about %.0f seconds each way".format(
-                light.targetBytes / (1024.0 * 1024.0),
-                (light.graceMillis + light.measureMillis) / 1000.0,
-            ),
+            // The cost, in the words of the link actually carrying it.
+            // "25 MB" means one thing on Wi-Fi and another on mobile
+            // data, and this is the app asking for permission to spend
+            // it — so the number is shown beside what it will be spent
+            // on rather than floating free.
+            text = costLine(volume, link),
             style = MaterialTheme.typography.bodyMedium,
             color = PulsePalette.OnSurfaceVariant,
             textAlign = TextAlign.Center,
         )
 
-        Spacer(Modifier.height(28.dp))
+        // A refusal lives here, under the cost, in the accent that means
+        // something is wrong. It is not a dialog: the answer belongs
+        // beside the control that produced it, and someone who is
+        // offline should see why the app is not working in the place
+        // where they would press it.
+        refusal?.let {
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = PulsePalette.Warning,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        Spacer(Modifier.height(26.dp))
         HorizontalDivider(color = PulsePalette.GridLine)
         Spacer(Modifier.height(14.dp))
 
@@ -370,6 +580,125 @@ private fun IdleBlock(onRun: () -> Unit) {
     }
 }
 
+/**
+ * Light or Full, and what each will cost.
+ *
+ * This control did not exist while the README said a heavier test was
+ * opt-in. `Volume.FULL` was defined, tested and unreachable, which is
+ * worse than not having written it: the documentation described a
+ * choice nobody could make.
+ *
+ * Shown as two pills rather than a switch because they are not on and
+ * off — they are two different measurements with two different costs,
+ * and a switch implies a binary where the real distinction is magnitude.
+ * Each carries its own megabyte figure so the choice is priced where it
+ * is made, which is the whole reason to make it at all.
+ */
+@Composable
+private fun VolumeSelector(volume: Volume, onVolume: (Volume) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Volume.entries.forEach { option ->
+            val selected = option == volume
+            val megabytes = "%.0f MB".format(Policy.megabytesFor(option))
+            val label = if (option == Volume.LIGHT) "Light" else "Full"
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(
+                        if (selected) PulsePalette.SurfaceRaised else Color.Transparent
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = if (selected) PulsePalette.Primary else PulsePalette.GridLine,
+                        shape = RoundedCornerShape(50),
+                    )
+                    .clickable { onVolume(option) }
+                    .heightIn(min = 44.dp)
+                    .padding(horizontal = 20.dp, vertical = 11.dp)
+                    .semantics { contentDescription = "$label, $megabytes" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "$label  $megabytes",
+                    style = MaterialTheme.typography.labelLarge.merge(Tabular),
+                    color = if (selected) PulsePalette.OnSurface else PulsePalette.OnSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * What this run will cost, in the words of the link carrying it.
+ *
+ * Reads the byte ceiling from the profile rather than carrying a
+ * number beside this string, so the figure here and the figure the
+ * policy warns with cannot drift apart — and on the run where being
+ * wrong would cost somebody money, they are the same number.
+ */
+private fun costLine(volume: Volume, link: LinkState): String {
+    val megabytes = "%.0f MB".format(Policy.megabytesFor(volume))
+    val seconds = "%.0f".format(
+        (Profiles.of(volume).graceMillis + Profiles.of(volume).measureMillis) / 1000.0
+    )
+    // "on" for a network and "of" for mobile data, because the first
+    // says where the data goes and the second says whose it is. "25 MB
+    // Wi-Fi" said neither and read as a label with a word missing.
+    val where = when {
+        !link.connected -> "You are offline"
+        link.metered -> "of mobile data"
+        else -> "on ${link.link.label}"
+    }
+    return "About $megabytes $where · $seconds seconds each way"
+}
+
+/**
+ * A run that was stopped by the person, not by a fault.
+ *
+ * The phases that finished are still shown, because a download figure
+ * from a cancelled run is a real measurement of a real transfer and
+ * discarding it would be its own kind of dishonesty. The line above it
+ * says what is missing, because a partial report that does not say it
+ * is partial is worse than no report.
+ */
+@Composable
+private fun StoppedBlock(done: List<PhaseFigure>, onAgain: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "STOPPED",
+            style = MaterialTheme.typography.labelMedium.merge(Tabular),
+            color = PulsePalette.OnSurfaceVariant,
+            letterSpacing = 1.4.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "You stopped this one.",
+            style = MaterialTheme.typography.headlineSmall,
+            color = PulsePalette.OnSurface,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = if (done.isEmpty()) {
+                "Nothing had finished yet."
+            } else {
+                "What finished is below. The rest was not measured, and this app " +
+                    "will not guess at it."
+            },
+            style = MaterialTheme.typography.bodyLarge,
+            color = PulsePalette.OnSurfaceVariant,
+        )
+        if (done.isNotEmpty()) {
+            Spacer(Modifier.height(24.dp))
+            PhaseLog(done)
+        }
+        Spacer(Modifier.height(34.dp))
+        PrimaryAction("Test again", onAgain)
+    }
+}
+
 /** The four things a run measures, as nouns. */
 private val MEASUREMENTS = listOf("Latency", "Download", "Upload", "Stability")
 
@@ -387,7 +716,7 @@ private val MEASUREMENTS = listOf("Latency", "Download", "Upload", "Stability")
  * an alert; a slow one reads as breathing, which is what is meant.
  */
 @Composable
-private fun PulsingControl(onRun: () -> Unit) {
+private fun PulsingControl(onRun: () -> Unit, enabled: Boolean = true) {
     val breath = rememberInfiniteTransition(label = "breath")
     val swell by breath.animateFloat(
         initialValue = 0f,
@@ -398,6 +727,12 @@ private fun PulsingControl(onRun: () -> Unit) {
         ),
         label = "swell",
     )
+    // A control the app will not press stops breathing. The pulse said
+    // "ready", and when the answer is no, saying ready is a lie.
+    if (!enabled) {
+        StaticMark(214.dp, PulsePalette.GridLine)
+        return
+    }
     Box(modifier = Modifier.size(214.dp), contentAlignment = Alignment.Center) {
         // An echo that expands past the disc and fades on the same
         // cycle. The static edge stays put so the control's bounds are
@@ -442,6 +777,31 @@ private fun PulsingControl(onRun: () -> Unit) {
 }
 
 /**
+ * The control when it cannot be pressed.
+ *
+ * Same disc, same mark, no ring and no animation. A dimmed version of
+ * the live control would still read as something to try; this reads as
+ * the absence of one, and the reason is on screen underneath it.
+ */
+@Composable
+private fun StaticMark(size: androidx.compose.ui.unit.Dp, tint: Color) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(PulsePalette.Surface),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .border(1.dp, tint, CircleShape),
+        )
+        PulseMark(scale = 1f, colour = PulsePalette.OnSurfaceVariant)
+    }
+}
+
+/**
  * One beat.
  *
  * Flat, spike, deeper dip, flat. The previous mark was a five-point
@@ -453,7 +813,7 @@ private fun PulsingControl(onRun: () -> Unit) {
  * it, so the geometry is described once and animated by transform.
  */
 @Composable
-private fun PulseMark(scale: Float = 1f) {
+private fun PulseMark(scale: Float = 1f, colour: Color = PulsePalette.Pulse) {
     Canvas(modifier = Modifier.size(104.dp).scale(scale)) {
         val w = size.width
         val h = size.height
@@ -482,7 +842,7 @@ private fun PulseMark(scale: Float = 1f) {
         }
         drawPath(
             path = path,
-            color = PulsePalette.Pulse,
+            color = colour,
             style = Stroke(
                 width = w * 0.072f,
                 cap = StrokeCap.Round,
@@ -565,7 +925,7 @@ private val MEASUREMENT_PHASES = listOf(
  * object to begin with.
  */
 @Composable
-private fun ReadingCluster(live: LiveState) {
+private fun ReadingCluster(live: LiveState, volume: Volume) {
     // The figure on screen is the value at the trace's head, not the
     // last interval's raw rate.
     //
@@ -651,7 +1011,7 @@ private fun ReadingCluster(live: LiveState) {
         if (live.bytesSoFar > 0) {
             add("%.1f of %.0f MB".format(
                 live.bytesSoFar / 1_048_576.0,
-                live.targetMegabytes(),
+                live.targetMegabytes(volume),
             ))
         }
     }
@@ -733,8 +1093,8 @@ private data class AxisSpan(val low: Double, val high: Double)
  * working to. Two copies of "the volume" is how a progress line starts
  * promising 25 MB of a 100 MB test.
  */
-private fun LiveState.targetMegabytes(): Double =
-    Profiles.of(CURRENT_VOLUME).targetBytes / 1_048_576.0
+private fun LiveState.targetMegabytes(volume: Volume): Double =
+    Policy.megabytesFor(volume)
 
 /**
  * Fold the finished phase into the log and clear the live series.
@@ -767,11 +1127,15 @@ private fun MeasureState.Running.closeOffPhase(): List<PhaseFigure> {
             ?: return done
     }
     if (done.any { it.phase == phase }) return done
+    if (live == null) return done
     return done + PhaseFigure(phase, figure)
 }
 
 @Composable
-private fun RunningBlock(state: MeasureState.Running) {
+private fun RunningBlock(
+    state: MeasureState.Running,
+    onCancel: () -> Unit,
+) {
     val live = state.live
     Column(modifier = Modifier.fillMaxSize()) {
         PhaseTrack(state.phase)
@@ -791,7 +1155,7 @@ private fun RunningBlock(state: MeasureState.Running) {
         // reading is the event. They are not the same thought and they
         // should not be adjacent.
         Spacer(Modifier.height(36.dp))
-        ReadingCluster(live)
+        ReadingCluster(live, state.volume)
         Spacer(Modifier.height(24.dp))
 
         // The trace takes everything that is left, which on this device
@@ -878,6 +1242,15 @@ private fun RunningBlock(state: MeasureState.Running) {
             Spacer(Modifier.height(20.dp))
             PhaseLog(state.done)
         }
+
+        // The way out, at the bottom where a thumb already is.
+        //
+        // This control did not exist, which meant a run of up to fifty
+        // seconds could not be stopped. That is not a missing feature so
+        // much as a missing exit: every screen in this app is one tap
+        // from anywhere else except this one, while it is running.
+        Spacer(Modifier.height(18.dp))
+        ActionRow("Stop", PulsePalette.OnSurfaceVariant, onCancel)
     }
 }
 
@@ -894,11 +1267,12 @@ private fun RunningBlock(state: MeasureState.Running) {
 private fun PhaseLog(done: List<PhaseFigure>) {
     Column {
         HorizontalDivider(color = PulsePalette.GridLine)
-        // Three, not four. Four rows of log plus a fixed plot is more
-        // than a short screen holds, and a row cut in half by the
-        // footer is worse than a row that was never drawn — the earlier
-        // phases are the least interesting ones by then.
-        done.takeLast(3).forEach { entry ->
+        // Three while running, every one when stopped. During a live run
+        // the newest rows matter most and four plus the fixed plot will
+        // not fit a short screen. Once the run is over there is nothing
+        // new arriving, and dropping the earliest row drops the idle
+        // latency — which is the figure the other three are read against.
+        done.takeLast(if (done.size <= 4) done.size else 3).forEach { entry ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -907,8 +1281,7 @@ private fun PhaseLog(done: List<PhaseFigure>) {
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    text = entry.phase.label.removePrefix("Measuring ")
-                        .replaceFirstChar { it.uppercase() },
+                    text = entry.phase.asNoun(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = PulsePalette.OnSurfaceVariant,
                 )

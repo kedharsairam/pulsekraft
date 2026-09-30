@@ -117,20 +117,119 @@ class Probe(
 
     private val profile: TestProfile = Profiles.of(volume)
 
-    data class Result(val report: TestReport?, val failure: ProbeFailure?)
+    data class Result(val report: TestReport?, val failure: ProbeFailure?) {
+        companion object {
+            /**
+             * A run the person stopped.
+             *
+             * Both fields null, which is otherwise a shape nothing
+             * produces. Named rather than left as two nulls so every
+             * caller has to consider the third outcome instead of
+             * pattern-matching on a message string.
+             */
+            val STOPPED = Result(null, null)
+        }
+    }
 
     private var lastStabilitySeries: List<Double> = emptyList()
+
+    /**
+     * Set by [cancel]. Read at every phase boundary and inside every
+     * sampling loop.
+     *
+     * @Volatile because the run is on one thread and the flag is set
+     * from the main one. Without it the write may sit in a register and
+     * the run never sees it, which presents as a cancel button that
+     * does nothing rather than as a memory visibility problem.
+     */
+    @Volatile
+    private var stopping = false
+
+    /**
+     * Every connection this probe has open, so [cancel] can close them.
+     *
+     * Copy-on-write because it is read from the main thread while the
+     * run thread appends to it, and because it holds at most three
+     * entries with one added per phase. A concurrent set would be more
+     * machinery than the problem is.
+     */
+    private val open: MutableList<MeasuredConnection> =
+        java.util.concurrent.CopyOnWriteArrayList()
+
+    /**
+     * Stop the run now.
+     *
+     * ## Why this closes sockets as well as interrupting
+     *
+     * `Thread.interrupt()` does not unblock a read on a Java socket. It
+     * sets a flag that `sleep` and `wait` honour and a blocking
+     * `SocketInputStream.read` does not — so a cancel during a transfer
+     * would sit there until the read timed out, up to fifteen seconds
+     * of a button that looks broken.
+     *
+     * Closing the socket does unblock it, immediately, by making the
+     * read fail. That failure arrives as an `IOException`, not as an
+     * interrupt, which is why every catch in [run] consults [stopping]
+     * before deciding whether it has a fault to report.
+     *
+     * Both are done. The interrupt unwinds any sleep between samples
+     * promptly; the close unwinds any read.
+     */
+    fun cancel() {
+        stopping = true
+        open.forEach { runCatching { it.close() } }
+    }
+
+    /**
+     * Register a connection so a cancel can reach it, and refuse to
+     * open one while stopping.
+     *
+     * The check here rather than at phase boundaries alone is what
+     * makes the flag reliable: a cancel arriving while a new socket was
+     * being opened would otherwise leave a connection nothing will
+     * close, and the run would carry on using it.
+     */
+    private fun track(connection: MeasuredConnection): MeasuredConnection {
+        checkStopping()
+        open.add(connection)
+        return connection
+    }
+
+    /** Throws if the person has asked for this to stop. */
+    private fun checkStopping() {
+        if (stopping) throw InterruptedException("cancelled")
+    }
 
     fun run(
         onPhase: (Phase) -> Unit = {},
         onLive: (LiveState) -> Unit = {},
     ): Result = try {
+        stopping = false
         Result(measure(onPhase, onLive), null)
     } catch (e: TransportException) {
-        Result(null, ProbeFailure("The test could not run", e.failure.explanation))
+        // A cancellation closes the socket, and that surfaces here as a
+        // transport failure. Reporting it as one would blame the
+        // network for something the person did, so the flag decides.
+        if (stopping) Result.STOPPED
+        else Result(null, ProbeFailure("The test could not run", e.failure.explanation))
+    } catch (e: java.io.IOException) {
+        if (stopping) Result.STOPPED
+        else Result(
+            null,
+            ProbeFailure(
+                "The connection dropped",
+                "the socket failed mid-test, so there is nothing to report",
+            ),
+        )
     } catch (e: InterruptedException) {
+        // Re-asserted before returning: an interrupt that is swallowed
+        // rather than restored leaves the thread's cancelled state
+        // cleared for whatever runs on it next.
         Thread.currentThread().interrupt()
-        Result(null, ProbeFailure("The test was cancelled", "it was stopped before it finished"))
+        Result.STOPPED
+    } finally {
+        open.forEach { runCatching { it.close() } }
+        open.clear()
     }
 
     private fun measure(onPhase: (Phase) -> Unit, onLive: (LiveState) -> Unit): TestReport {
@@ -139,12 +238,13 @@ class Probe(
             .suggestReceiveBuffer(assumeBps, assumedRttMs)
 
         onPhase(Phase.CONNECTING)
-        val idle = MeasuredConnection().apply {
+        val idle = track(MeasuredConnection()).apply {
             connect(bufferBytes, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS)
         }
         val granted = idle.grantedReceiveBuffer
 
         try {
+            checkStopping()
             onPhase(Phase.IDLE_LATENCY)
             // A few samples are taken and thrown away first, and the
             // reason is measured rather than assumed: on a real device
@@ -153,6 +253,7 @@ class Probe(
             val idleRtts = ArrayList<Double>(profile.idleSamples)
             val live = ArrayList<Double>()
             repeat(profile.idleSamples + WARMUP_SAMPLES) { index ->
+                checkStopping()
                 val rtt = oneRtt(idle)
                 if (rtt > 0 && index >= WARMUP_SAMPLES) {
                     idleRtts += rtt
@@ -181,14 +282,18 @@ class Probe(
                 // independent and short enough that twenty-two of them
                 // add eleven seconds, which a person will spend waiting.
                 Thread.sleep(maxOf(profile.sampleIntervalMillis, IDLE_SPACING_MS))
+                checkStopping()
             }
 
+            checkStopping()
             onPhase(Phase.DOWNLOAD)
             val down = transfer(Reading.DOWNLOAD, onPhase, onLive)
 
+            checkStopping()
             onPhase(Phase.UPLOAD)
             val up = transfer(Reading.UPLOAD, onPhase, onLive)
 
+            checkStopping()
             onPhase(Phase.STABILITY)
             val stability = watchStability(idle, onLive)
 
@@ -243,11 +348,11 @@ class Probe(
     private fun transfer(reading: Reading, onPhase: (Phase) -> Unit, onLive: (LiveState) -> Unit): TransferResult {
         val bufferBytes = com.krafttools.pulsekraft.core.Buffer
             .suggestReceiveBuffer(assumeBps, assumedRttMs)
-        val carrier = MeasuredConnection()
+        val carrier = track(MeasuredConnection())
         carrier.connect(bufferBytes, CONNECT_TIMEOUT_MS, TRANSFER_TIMEOUT_MS)
         // The watcher is a second socket to the same edge. It is the
         // only reason the loaded-latency figure means anything.
-        val watcher = MeasuredConnection()
+        val watcher = track(MeasuredConnection())
         watcher.connect(bufferBytes, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS)
 
         val samples: MutableList<com.krafttools.pulsekraft.core.RateSample> =
