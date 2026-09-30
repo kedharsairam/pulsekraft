@@ -466,7 +466,16 @@ internal fun RunningBlock(
             // height plus a weighted spacer cannot overflow: the plot
             // is known, the log is bounded to three rows, and whatever
             // is left goes to the spacer where nothing can clip.
-            modifier = Modifier.height(300.dp),
+            // Flexible, with a cap — not a fixed height.
+            //
+            // A fixed 300dp plus the phase log plus the stop control
+            // summed to more than a short screen holds, and the stop
+            // control was the thing that disappeared: the last child of
+            // an overflowing column is clipped, and the exit was on the
+            // end. Weighting the plot lets it give up the space instead,
+            // and the cap still stops it becoming the 457dp chart it was
+            // when it had everything to itself.
+            modifier = Modifier.weight(1f).heightIn(max = 300.dp),
         )
 
         Spacer(Modifier.height(10.dp))

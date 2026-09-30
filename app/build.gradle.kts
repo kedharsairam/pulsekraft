@@ -91,6 +91,11 @@ dependencies {
     androidTestImplementation("androidx.test:rules:1.7.0")
     androidTestImplementation("androidx.test:core:1.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    androidTestImplementation("androidx.compose.ui:ui-test-manifest")
+    // `debug`, not `androidTest`. This artefact contributes the host
+    // activity that Compose's test rule launches, and it has to be
+    // merged into the app being tested — declared only for the test APK
+    // it lands in the test APK's own process, and every test fails with
+    // "Intent resolved to different process" before it runs a line.
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
 }

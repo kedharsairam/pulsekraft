@@ -87,16 +87,21 @@ the code at several points during development. What changed:
 
 - 106 JVM unit tests covering the parser, the arithmetic, the statistics,
   the policy, the verdict and the published method.
+- 13 instrumented tests covering every state of the screen on a device,
+  including the ones that cannot be produced on demand: refused, offline,
+  stopped, failed. The screen was split into a pure render and a
+  coordinator so those states are reachable in a millisecond rather than
+  by putting a phone in airplane mode.
 - Release APKs are debug-signed deliberately, so a downloaded APK can be
   checked against this repository. No release keystore.
 - MIT.
 
 ### Known gaps
 
-- **No instrumented tests.** The largest gap in the project, and larger
-  here than in an app without a live network.
+- **The transport is still untested.** The instrumented suite covers the
+  screen; nothing covers a real socket, the platform read, or anything
+  timing-dependent, and those are the parts where a real network is
+  required. Mocking them would mean testing the mock.
 - No result history, by design.
-- Manual device testing only; nothing in the suite covers the transport,
-  the interface, or anything timing-dependent.
 
 [0.1.0]: https://github.com/kedharsairam/pulsekraft/releases/tag/v0.1.0

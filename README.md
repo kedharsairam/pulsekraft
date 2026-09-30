@@ -199,17 +199,25 @@ and short-body cases — is pure and fully tested on the JVM with no device.
 | `VerdictTest` (16) | Every branch of the published sentence, including the cases that were once wrong |
 | `LatencyTest` (14) | RFC 3550 jitter, stability verdicts, thresholds pinned by value |
 | `PolicyTest` (10) | The data-cost rules, including a platform that tells us nothing |
-| `MethodTest` (9) | That the published method still describes what the code computes |
+| `MethodTest` (10) | That the published method still describes what the code computes |
 
-There are no instrumented tests yet. That is the largest known gap in
-the project, and it is larger here than in an app without a live network
-in it.
+Plus **13 instrumented tests** on a device, which exist because the
+alternative was worse: producing the refused, offline, stopped and failed
+states by hand needs a phone in airplane mode, a roaming SIM, a socket
+that fails on cue and forty seconds of patience per case. `MeasureContent`
+is the screen as a pure function of its state, and the coordinator owning
+the thread and the platform read sits above it, so every state is
+reachable in a millisecond.
 
-The shape of the suite follows what is actually risky. Pure logic —
-parsing, arithmetic, statistics, policy, and the published method — is
-covered on the JVM. The transport, the UI and anything timing-dependent
-are not yet covered by anything, and the device testing so far has been
-manual.
+What the instrumented suite covers is the part that broke repeatedly and
+silently: a control falling off the bottom of an overflowing column, a
+touch target under 48dp, a degenerate series dividing by zero, and two
+figures on one screen contradicting each other.
+
+**What is still untested is the transport.** Nothing covers a real socket,
+the platform read, or anything timing-dependent, because those need a real
+network — and mocking them would mean testing the mock. That is the
+largest remaining gap and it is stated here rather than implied away.
 
 ---
 

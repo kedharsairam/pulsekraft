@@ -284,141 +284,69 @@ fun MeasureScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .systemBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 12.dp),
-    ) {
-        // ONE flexible child, not two.
-        //
-        // This column used to hold the state block, a weight(1f) spacer
-        // and the footer. DoneBlock's trace is also weight(1f), and both
-        // of those were children of THIS scope — so the leftover height
-        // was split evenly between a plot and an empty gap, which is why
-        // the result screen had a band of nothing under its content that
-        // nothing could fill.
-        //
-        // The content region takes the slack as one box and each block
-        // lays itself out inside it. A block's own weight then resolves
-        // against its own column, which is the only scope where that
-        // means anything.
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                // Room above the footer's own rule. The phase log is
-                // pushed to the bottom of this region by a weight, and
-                // without this its last row sat on the divider with
-                // four pixels between them, which reads as two rules and
-                // a gap rather than as one screen.
-                .padding(bottom = 14.dp),
-            contentAlignment = Alignment.TopStart,
-        ) {
-        // Keyed on the class, not the value. Running state is a new
-        // instance ten times a second, and keying on the instance would
-        // start a crossfade on every live reading — the screen would
-        // strobe. Keying on the class animates the three transitions
-        // that are transitions (idle to running, running to result,
-        // result back to idle) and nothing else.
-        Crossfade(
-            targetState = state::class,
-            animationSpec = tween(340),
-            label = "screen",
-        ) { _ ->
-        when (val current = state) {
-            is MeasureState.Idle -> IdleBlock(
-                volume = current.volume,
-                link = current.link,
-                refusal = current.refusal,
-                onAbout = { aboutOpen = true },
-                onVolume = { volume ->
-                    // Choosing the heavier profile on a metered network
-                    // does not start anything; it just re-prices the
-                    // button, and the refusal text appears immediately
-                    // so the person knows before they press it.
-                    state = MeasureState.Idle(
-                        volume = volume,
-                        link = current.link,
-                        refusal = (Policy.decide(current.link, volume)
-                            as? Permission.Refuse)?.reason,
-                    )
-                },
-                onRun = {
-                    lastFrame = 0L
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    val volume = current.volume
-                    scope.launch {
-                        // Read at the moment of the press, not from the
-                        // value the idle screen was built with. The
-                        // network can change while someone is looking at
-                        // a screen that says what it will cost, and the
-                        // promise has to be the one that holds.
-                        val link = withContext(Dispatchers.IO) { reach.current() }
-                        when (val decision = Policy.decide(link, volume)) {
-                            is Permission.Refuse -> {
-                                state = MeasureState.Idle(volume, decision.reason, link)
-                                return@launch
-                            }
-                            // A warning does not stop the run. The cost
-                            // was on the idle screen in the same words
-                            // before the button was pressed, so the press
-                            // IS the agreement; a dialog restating it
-                            // would be one more tap to say the thing the
-                            // screen already said.
-                            else -> state = MeasureState.Idle(volume, null, link)
-                        }
-                        startRun(volume)
-                    }
-                },
+    // Declared before use so the wiring below can pass it as a reference.
+    lateinit var start: (Volume) -> Unit
+
+    MeasureContent(
+        state = state,
+        methodOpen = methodOpen,
+        onRun = { volume -> start(volume) },
+        onCancel = { runner?.cancel() },
+        onVolume = { volume ->
+            val idle = state as? MeasureState.Idle ?: return@MeasureContent
+            // Choosing the heavier profile on a metered network starts
+            // nothing. It re-prices the button, and the refusal appears
+            // immediately, so the reason is known before the press
+            // rather than after it.
+            state = MeasureState.Idle(
+                volume = volume,
+                link = idle.link,
+                refusal = (Policy.decide(idle.link, volume)
+                    as? Permission.Refuse)?.reason,
             )
-
-            is MeasureState.Running -> RunningBlock(current, onCancel = {
-                runner?.cancel()
-            })
-
-            is MeasureState.Stopped -> {
-                StoppedBlock(
-                    done = current.done,
-                    onAgain = {
-                        methodOpen = false
-                        state = MeasureState.Idle(current.volume)
-                    },
-                )
+        },
+        onAbout = { aboutOpen = true },
+        onAgain = {
+            methodOpen = false
+            // The profile they chose is remembered. Going back to the
+            // default here would silently discard a choice made on
+            // purpose.
+            val volume = when (val current = state) {
+                is MeasureState.Done -> current.report.volume
+                is MeasureState.Stopped -> current.volume
+                else -> Volume.LIGHT
             }
+            state = MeasureState.Idle(volume)
+        },
+        onToggleMethod = { methodOpen = !methodOpen },
+        modifier = modifier,
+    )
 
-            is MeasureState.Failed -> {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                FailedBlock(current)
-            }
-
-            is MeasureState.Done -> {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                DoneBlock(
-                    report = current.report,
-                    methodOpen = methodOpen,
-                    onToggleMethod = { methodOpen = !methodOpen },
-                    // Done used to be terminal. There was no control
-                    // anywhere on the result screen that would start
-                    // another test, so the second run of this app
-                    // required killing the process. A measurement tool
-                    // you can measure once is a demo, not a tool.
-                    onAgain = {
-                        methodOpen = false
-                        // The volume they chose is remembered, and the
-                        // link is re-read by the effect that runs on the
-                        // way back to idle. Going back to the default
-                        // profile here would silently discard a choice
-                        // they made on purpose.
-                        state = MeasureState.Idle(current.report.volume)
-                    },
-                )
+    start = { volume ->
+        lastFrame = 0L
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        scope.launch {
+            // Read at the moment of the press, not from the value the
+            // idle screen was built with. The network can change while
+            // someone is looking at a screen that says what it will cost,
+            // and the promise has to be the one that holds.
+            val link = withContext(Dispatchers.IO) { reach.current() }
+            when (val decision = Policy.decide(link, volume)) {
+                is Permission.Refuse -> {
+                    state = MeasureState.Idle(volume, decision.reason, link)
+                    return@launch
+                }
+                // A warning does not stop the run. The cost was on the
+                // idle screen in the same words before the button was
+                // pressed, so the press IS the agreement; a dialog
+                // restating it would be one more tap to say the thing the
+                // screen already said.
+                else -> {
+                    state = MeasureState.Idle(volume, null, link)
+                    startRun(volume)
+                }
             }
         }
-        }
-        }
-
-        Footer()
     }
 
     // Above the whole screen rather than inside any one block: it is
@@ -428,6 +356,13 @@ fun MeasureScreen(modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The press path: decide, then run or refuse.
+ *
+ * A local function rather than an argument list inside a lambda, so that
+ * the order of the two steps — read the network, then act on what it
+ * says — is readable rather than nested eight levels down.
+ */
 /** Ten frames a second. A number that updates faster is not read faster. */
 
 private const val FRAME_MS = 100L
