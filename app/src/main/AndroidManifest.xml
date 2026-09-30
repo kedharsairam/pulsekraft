@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Two permissions, and the reason each exists.
+
+      INTERNET is the one permission every other Kraft app does not have,
+      and this app cannot exist without it: measuring a connection means
+      sending bytes over it. The About screen says so in those words
+      rather than burying the difference.
+
+      ACCESS_NETWORK_STATE is for reading whether the current network is
+      metered, so the app can warn before spending somebody's data
+      allowance and can name the transport it is running over.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      No camera, no location, no microphone, no storage, no background
+      work, no notifications.
+
+      A speed test needs a socket and the truth about the network it is
+      on. Everything above that list would be collected on principle
+      rather than for a feature, and the whole pitch of this app is that
+      it does not do that.
+    -->
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PulseKraft">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.PulseKraft">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

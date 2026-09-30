@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The window background, so the app is violet-black from the moment
+      it launches rather than flashing the platform's default. A speed
+      test opened at night should not open white.
+    -->
+    <color name="pk_background">#FF100E17</color>
+    <color name="pk_primary">#FF9D8CFF</color>
+    <color name="pk_on_background">#FFECE9F2</color>
+</resources>

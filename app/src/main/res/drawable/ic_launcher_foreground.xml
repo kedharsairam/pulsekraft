@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The icon is a pulse trace, which is the app's name drawn rather than
+  spelled out, and it is the two colours of the palette: violet for the
+  baseline and the cool blue of the spike. A launcher icon is the only
+  part of this app most people will ever see, so it is drawn as an
+  instrument readout rather than as a letter or a generic speedometer.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Baseline: in and out of the spike, in the identity violet. -->
+    <path
+        android:pathData="M26,56 L40,56"
+        android:strokeColor="#9D8CFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M62,56 L70,56"
+        android:strokeColor="#9D8CFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+
+    <!-- The spike, in the pulse blue. This is the waveform's other lobe. -->
+    <path
+        android:pathData="M40,56 L48,56 L54,30 L62,72 L70,56"
+        android:strokeColor="#6FD3FF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <!-- A second, smaller beat, so the trace reads as ongoing. -->
+    <path
+        android:pathData="M70,56 L76,44 L82,56"
+        android:strokeColor="#6FD3FF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

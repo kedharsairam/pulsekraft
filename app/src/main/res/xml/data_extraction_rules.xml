@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  No backup, and no rules for it either.
+
+  allowBackup is false in the manifest, so a device-to-device transfer
+  cannot carry anything this app holds. There is nothing to hold today —
+  v1 stores no results — but the setting is made now rather than later,
+  because "we will remember to turn it off" is not a privacy control.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

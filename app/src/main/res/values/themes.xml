@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Dark from the window, not just from the content. The stock
+      light theme is the single most common thing that makes a dark-only
+      app flash white on launch, and a flash at 1am is the whole problem
+      this theme exists to avoid.
+    -->
+    <style name="Theme.PulseKraft" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/pk_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorBackground">@color/pk_background</item>
+    </style>
+</resources>
