@@ -62,6 +62,10 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    // For `viewModel()`. The screen's state has to outlive a rotation:
+    // a run that vanishes when the phone turns is a measurement lost
+    // silently, with the worker still moving and no handle on it.
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.activity:activity-compose:1.12.1")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")

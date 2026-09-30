@@ -53,6 +53,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -218,7 +220,28 @@ internal fun ReadingCluster(live: LiveState, volume: Volume) {
     val cap = LocalDensity.current.fontScale.coerceAtMost(HERO_FONT_SCALE_CAP)
     val size = 74.sp * cap
 
-    Row(verticalAlignment = Alignment.Bottom) {
+    // Spoken as one phrase.
+    //
+    // Without this a screen reader announces "299" and then "Mbps" as
+    // two unrelated items, with no indication that this is a download
+    // figure or that the plot underneath is the same measurement drawn.
+    // For an app whose whole argument is that its numbers can be taken
+    // literally, a blind reader getting a bare digit is the accessibility
+    // equivalent of publishing the median instead of the goodput.
+    val spoken = buildString {
+        append(when (live.reading) {
+            Reading.LATENCY -> "Latency "
+            Reading.DOWNLOAD -> "Download "
+            Reading.UPLOAD -> "Upload "
+        })
+        append(formatReading(live.reading, shown))
+        append(' ')
+        append(live.reading.unit)
+    }
+    Row(
+        verticalAlignment = Alignment.Bottom,
+        modifier = Modifier.clearAndSetSemantics { contentDescription = spoken },
+    ) {
         Text(
             text = formatReading(live.reading, shown),
             style = MaterialTheme.typography.displayLarge.merge(Tabular).copy(
@@ -356,42 +379,6 @@ internal data class AxisSpan(val low: Double, val high: Double)
 internal fun LiveState.targetMegabytes(volume: Volume): Double =
     Policy.megabytesFor(volume)
 
-/**
- * Fold the finished phase into the log and clear the live series.
- *
- * Summarised from the interval series rather than carried out of the
- * probe, because by this point the probe's own summary is what the
- * result screen will use and the two must not disagree: the live
- * figure is the mean of the intervals, the reported one is the goodput
- * over the whole measured window, and they are close but not equal.
- */
-internal fun MeasureState.Running.closeOffPhase(): List<PhaseFigure> {
-    val series = live?.series ?: return done
-    if (series.isEmpty()) return done
-    val figure = when (live.reading) {
-        Reading.LATENCY -> {
-            val sorted = series.sorted()
-            "%.0f ms".format(sorted[sorted.size / 2])
-        }
-        // The probe's own running goodput, not the mean of the series.
-        // The two differ by enough to matter, and only one of them is
-        // the figure the result screen will print.
-        else -> live.averageMbpsToDate
-            .takeIf { it > 0.0 }
-            // "0 Mbps" reads as a broken app rather than as a very slow
-            // one, because it is what a failed transfer would print
-            // too. Below one megabit, keep a decimal — the run that
-            // produced this had genuinely transferred, just badly, and
-            // the number should say so.
-            ?.let { if (it >= 1.0) "%.0f Mbps".format(it) else "%.1f Mbps".format(it) }
-            ?: return done
-    }
-    if (done.any { it.phase == phase }) return done
-    if (live == null) return done
-    return done + PhaseFigure(phase, figure)
-
-}
-
 @Composable
 internal fun RunningBlock(
     state: MeasureState.Running,
@@ -451,6 +438,13 @@ internal fun RunningBlock(
                 "above %.0f ms".format(VOICE_LIMIT_MS)
             } else null,
             logarithmic = live.reading != Reading.LATENCY,
+            spokenSummary = buildString {
+                append("A line chart of ")
+                append(live.reading.name.lowercase())
+                append(" over the last ")
+                append(live.series.size)
+                append(" readings.")
+            },
             // A FIXED height, not a cap on a weighted one.
             //
             // A plot given every remaining pixel was 457dp tall: at

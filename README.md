@@ -86,9 +86,11 @@ that cannot notice the claim going stale.
   throttles the probe and produces a baseline worse than the load it was
   meant to be measured against.
 - The receive buffer is sized for a guess and then **checked against the
-  result**: if a figure is sitting on the ceiling this app was capable of,
-  the result says so rather than publishing a number the app produced
-  itself.
+  result**: if a figure is sitting at the ceiling this app was capable of,
+  the result screen says so. A low number can be a slow line or it can be
+  this app's own receive buffer, and the second case is the one where the
+  figure on screen is a fact about the app rather than about the
+  connection.
 - Downloads are **byte-capped**, uploads are **byte-capped** rather than
   time-boxed — `Content-Length` is a promise and stopping early hangs the
   edge.
@@ -189,19 +191,20 @@ and short-body cases — is pure and fully tested on the JVM with no device.
 
 ## Tests
 
-106 JVM unit tests, no device required:
+117 JVM unit tests, no device required:
 
 | Suite | Covers |
 |---|---|
 | `ProtocolTest` (21) | Chunk framing, status codes, short bodies, truncated responses |
+| `TransportHeadTest` (10) | The request bytes, byte for byte |
 | `RateTest` (18) | Goodput, percentiles, nanosecond arithmetic, bufferbloat indexing |
 | `BufferTest` (17) | Bandwidth-delay product, buffer ceilings, the self-check against a result |
 | `VerdictTest` (16) | Every branch of the published sentence, including the cases that were once wrong |
 | `LatencyTest` (14) | RFC 3550 jitter, stability verdicts, thresholds pinned by value |
 | `PolicyTest` (10) | The data-cost rules, including a platform that tells us nothing |
-| `MethodTest` (10) | That the published method still describes what the code computes |
+| `MethodTest` (10) | That the published method still describes what the code computes, and that every published string is shown |
 
-Plus **13 instrumented tests** on a device, which exist because the
+Plus **17 instrumented tests** on a device, which exist because the
 alternative was worse: producing the refused, offline, stopped and failed
 states by hand needs a phone in airplane mode, a roaming SIM, a socket
 that fails on cue and forty seconds of patience per case. `MeasureContent`
@@ -214,10 +217,12 @@ silently: a control falling off the bottom of an overflowing column, a
 touch target under 48dp, a degenerate series dividing by zero, and two
 figures on one screen contradicting each other.
 
-**What is still untested is the transport.** Nothing covers a real socket,
-the platform read, or anything timing-dependent, because those need a real
-network — and mocking them would mean testing the mock. That is the
-largest remaining gap and it is stated here rather than implied away.
+**What is still untested is the socket itself.** The request bytes, the
+response parsing and every decision the transport makes are covered. What
+is not covered is a live socket: TLS, the buffer negotiation, a body
+arriving in pieces, and anything timing-dependent. Those need either a
+real network or a certificate, and this project has neither — mocking
+them would mean testing the mock. The platform read has the same gap.
 
 ---
 
@@ -246,6 +251,19 @@ imitating any particular product. The rules that actually shaped it:
   that reflows off the edge at 2x is a broken instrument, not an
   accessible one. Everything the trace shows is still on the result
   screen.
+- **The figure, the verdict and the plot are spoken as phrases.** A
+  screen reader used to announce "299" and then "Mbps" as two unrelated
+  items, and a `Canvas` announces nothing at all — so the only picture in
+  the app was invisible to a blind reader. The plot's description is
+  generated from the measured numbers, so it cannot describe a watch that
+  did not happen.
+
+**Portrait only**, deliberately. Every layout here is a single column
+built around a figure sized to a thumb's width; rotated, the content is
+about 500dp tall in a 390dp viewport, and the alternative was the middle
+of the screen falling off the bottom with no way to scroll to it. A
+landscape layout would be a second design rather than an adaptation of
+this one, and it is not wanted.
 
 ---
 

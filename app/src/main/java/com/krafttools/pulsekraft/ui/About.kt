@@ -155,6 +155,13 @@ fun AboutSheet(onDismiss: () -> Unit) {
 
             Section("How it is measured") {
                 Paragraph(Method.AGGREGATION)
+                // KEEP_ALIVE was written, tested and shown nowhere. It is
+                // the sentence that answers the objection a sceptical
+                // reader has first — "you are measuring handshakes" — and
+                // it is now in the one place in the app where a
+                // disclosure belongs, rather than only in a test that
+                // checks it says something.
+                Paragraph(Method.KEEP_ALIVE)
                 Paragraph(Method.SCOPE)
                 Paragraph(Method.LIMITS)
             }

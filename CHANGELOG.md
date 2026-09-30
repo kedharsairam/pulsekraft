@@ -5,6 +5,46 @@ All notable changes to PulseKraft.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and
 this project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+Fixes found by auditing a finished v0.1.0 against its own documentation.
+
+### Fixed
+
+- **Rotating the phone mid-test destroyed the run.** Every piece of state
+  lived in `remember`, so a configuration change threw away the
+  composable and its values — including the handle on the worker thread.
+  The measurement carried on with nothing able to reach it, could not be
+  stopped, and its result was written to a state holder that no longer
+  existed. State now lives in a `ViewModel`.
+- **Landscape dropped four elements off the bottom of the idle screen**
+  with no way to scroll to them. The screen is now portrait by decision
+  rather than by accident, and the reason is recorded in the manifest.
+- **The receive-buffer self-check was never shown.** It was implemented,
+  documented, given five tests, and called from nowhere — while the
+  README claimed the result screen said so. It does now.
+- **A published disclosure was invisible.** `Method.KEEP_ALIVE`, the
+  sentence answering "you are measuring handshakes", was written and
+  tested and appeared in no screen. It is in the about sheet, and a test
+  now fails if a published string is added without being shown.
+
+### Added
+
+- **Screen reader support.** The figure and its unit are one spoken
+  phrase rather than two unrelated items, the verdict is a heading read
+  before its evidence, and the plot describes itself from the numbers it
+  was drawn from.
+- **Ten tests for the request bytes.** `writeRequest` built its head
+  inline into a socket stream, so it could not be tested at all. It is a
+  pure function now, because a request missing its terminating blank line
+  is one the server waits on rather than rejects — nothing logged,
+  nothing thrown, a sixty-second timeout.
+
+### Known gaps
+
+- The socket itself is still untested: TLS, buffer negotiation, a body
+  arriving in pieces. These need a real network or a certificate.
+
 ## [0.1.0] — 2026-09-30
 
 First release. A measurement engine, and an interface that treats its own

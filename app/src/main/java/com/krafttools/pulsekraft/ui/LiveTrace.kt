@@ -17,6 +17,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.krafttools.pulsekraft.ui.theme.PulsePalette
@@ -96,9 +98,26 @@ fun LiveTrace(
      * jitter that matters.
      */
     logarithmic: Boolean = false,
+    /**
+     * What this plot shows, in a sentence.
+     *
+     * A `Canvas` is a drawing and announces nothing, so without this a
+     * screen reader steps straight over the only picture in the app.
+     * Null rather than a default, so a caller that has not thought about
+     * it does not get a confidently wrong description of a chart.
+     */
+    spokenSummary: String? = null,
 ) {
     Box(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (spokenSummary == null) {
+                    Modifier
+                } else {
+                    Modifier.semantics { contentDescription = spokenSummary }
+                }
+            ),
         contentAlignment = Alignment.TopStart,
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {

@@ -194,24 +194,11 @@ class MeasuredConnection(
      * seconds for no visible reason.
      */
     fun writeRequest(method: String, path: String, contentLength: Long? = null) {
-        val builder = StringBuilder()
-        builder.append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
-        builder.append("Host: ").append(host).append("\r\n")
-        // Not politeness. Without it a proxy or a server that gzips will
-        // compress a highly repetitive upload to almost nothing, and the
-        // transfer completes instantly at a number that has nothing to
-        // do with the line. If a Content-Encoding comes back anyway, the
-        // header is right there to be noticed.
-        builder.append("Accept-Encoding: identity\r\n")
-        builder.append("Connection: keep-alive\r\n")
-        if (contentLength != null) {
-            builder.append("Content-Type: application/octet-stream\r\n")
-            builder.append("Content-Length: ").append(contentLength).append("\r\n")
-        }
-        builder.append("\r\n")
         val out = output ?: throw TransportException(TransportFailure.NO_ROUTE)
         try {
-            out.write(builder.toString().toByteArray(Charsets.US_ASCII))
+            out.write(
+                requestHead(host, method, path, contentLength).toByteArray(Charsets.US_ASCII),
+            )
         } catch (e: IOException) {
             throw TransportException(TransportFailure.REFUSED, e)
         }
@@ -328,3 +315,48 @@ class TransportException(
     val failure: TransportFailure,
     cause: Throwable? = null,
 ) : java.io.IOException("${failure.explanation}", cause)
+
+
+/**
+ * The bytes of a request head.
+ *
+ * Pure, and extracted so it can be tested without a socket. Every line
+ * here was load-bearing at some point, and two of them were learned the
+ * expensive way.
+ *
+ * `Content-Length` on a POST: without it the edge does not know when the
+ * body ends and the upload hangs. Stopping early is the same failure from
+ * the other direction, which is why the upload is byte-boxed rather than
+ * time-boxed.
+ *
+ * `Accept-Encoding: identity`: not politeness. Without it a proxy or a
+ * server that gzips will compress a highly repetitive upload to almost
+ * nothing, and the transfer completes instantly at a number that has
+ * nothing to do with the line.
+ *
+ * `Connection: keep-alive`: every latency sample in this app comes from
+ * one persistent connection, and a reconnect between samples would
+ * measure the handshake rather than the path.
+ *
+ * The terminating blank line is the part most easily lost, and losing it
+ * produces a request the server waits on rather than rejects — nothing
+ * is logged and nothing is thrown, it simply times out sixty seconds
+ * later. Which is why this is a function with a test rather than four
+ * lines inline in a writer.
+ */
+internal fun requestHead(
+    host: String,
+    method: String,
+    path: String,
+    contentLength: Long? = null,
+): String = buildString {
+    append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
+    append("Host: ").append(host).append("\r\n")
+    append("Accept-Encoding: identity\r\n")
+    append("Connection: keep-alive\r\n")
+    if (contentLength != null) {
+        append("Content-Type: application/octet-stream\r\n")
+        append("Content-Length: ").append(contentLength).append("\r\n")
+    }
+    append("\r\n")
+}

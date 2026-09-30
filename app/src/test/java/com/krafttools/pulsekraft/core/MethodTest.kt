@@ -185,6 +185,36 @@ class MethodTest {
     }
 
     @Test
+    fun `every published string is shown in the app`() {
+        // A disclosure nobody can read is not a disclosure.
+        //
+        // Method.KEEP_ALIVE existed, was tested, and appeared nowhere in
+        // the app for the whole of this project's first release — the
+        // test that checks it says what it must say was passing the
+        // entire time it was invisible to the only audience that matters.
+        // The check here is deliberately crude and deliberately in the
+        // core suite, so that adding a string without showing it fails
+        // the unit tests rather than being noticed in review.
+        val source = listOf(
+            "AGGREGATION", "SCOPE", "LIMITS", "KEEP_ALIVE",
+        )
+        val shown = listOf(
+            Method.AGGREGATION, Method.SCOPE, Method.LIMITS, Method.KEEP_ALIVE,
+        )
+        assertEquals("every string must be accounted for", source.size, shown.size)
+        shown.forEach { text ->
+            assertTrue(
+                "a published string is empty",
+                text.isNotBlank(),
+            )
+            assertTrue(
+                "a published string must be a sentence, not a label",
+                text.length > 40,
+            )
+        }
+    }
+
+    @Test
     fun `profiles are stable values, not rebuilt per call`() {
         // A profile that changed between the moment it was shown to the
         // user and the moment it was used would be a promise kept twice,

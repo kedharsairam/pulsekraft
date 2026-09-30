@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
+import androidx.test.core.app.ActivityScenario
 import com.krafttools.pulsekraft.core.Latency
 import com.krafttools.pulsekraft.core.LatencySummary
 import com.krafttools.pulsekraft.core.Link
@@ -270,7 +271,13 @@ class MeasureUiTest {
         // beside a plot full of data, because the headline was the raw
         // interval rate and a socket buffer leaves that near zero.
         show(runningLatency(listOf(90.0, 88.0, 91.0, 89.0, 87.0)))
-        compose.onNodeWithText("87").assertIsDisplayed()
+        // Asserted through the semantics rather than through the raw text,
+        // because the figure and its unit are deliberately merged into one
+        // spoken phrase — a screen reader announcing "87" and then "ms" as
+        // two unrelated items is the accessibility version of publishing
+        // the median instead of the goodput. The merge is the point, so
+        // the test now pins the phrase.
+        compose.onNodeWithContentDescription("Latency 87 ms").assertIsDisplayed()
     }
 
     @Test
@@ -278,6 +285,74 @@ class MeasureUiTest {
         show(MeasureState.Done(report()))
         compose.onNodeWithText("Download").assertIsDisplayed()
         compose.onNodeWithText("107 Mbps   2.0s").assertIsDisplayed()
+    }
+
+    // ------------------------------------------------- the configuration change
+
+    @Test
+    fun theScreenSurvivesAConfigurationChange() {
+        // Regression test for the worst bug in this app's history.
+        //
+        // Every piece of state lived in `remember`, so rotating the phone
+        // mid-test threw the composable and its values away — including
+        // the handle on the worker thread. Proven on device: the run
+        // disappeared back to the idle screen, the measurement carried on
+        // with nothing able to reach it, could not be stopped, and its
+        // result was written to a state holder that no longer existed.
+        //
+        // This does not test the ViewModel's survival — that is the
+        // framework's job and a test of it would be a test of the
+        // framework. It tests the thing that would break if the state
+        // moved back into a composable: that a recreation leaves a
+        // working screen rather than a crash or an empty one.
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertTrue(
+                    "the activity did not set content",
+                    activity.findViewById<android.view.View>(
+                        android.R.id.content,
+                    ) != null,
+                )
+            }
+            scenario.recreate()
+            scenario.onActivity { activity ->
+                assertTrue(
+                    "the activity has no window after recreation",
+                    activity.window != null,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun theFigureIsSpokenAsOnePhrase() {
+        // A screen reader used to announce "299" and then "Mbps" as two
+        // unrelated items, with no indication that this was a download
+        // rate. The unit and the figure are now one description.
+        show(runningDownload())
+        compose.onNodeWithContentDescription("Download 97.5 Mbps").assertIsDisplayed()
+    }
+
+    @Test
+    fun theVerdictIsReadBeforeItsEvidence() {
+        // The answer is the sentence a person acts on, so it carries a
+        // heading and a description that includes the figure behind it.
+        show(MeasureState.Done(report(Latency.Verdict.STEADY, 53.0, 70.0)))
+        compose.onNodeWithContentDescription(
+            "Good for calls. 70 milliseconds of latency while the connection was busy",
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun theStabilityPlotDescribesItselfFromItsOwnData() {
+        // A Canvas announces nothing, so the only picture in this app was
+        // invisible to a screen reader. The description is generated from
+        // the measured numbers rather than written by hand, so it cannot
+        // describe a watch that did not happen.
+        show(MeasureState.Done(report(Latency.Verdict.STEADY, 53.0, 70.0)))
+        compose.onNodeWithContentDescription(
+            "Latency stayed between 42 and 85 milliseconds over the watch. Steady.",
+        ).assertIsDisplayed()
     }
 
     // ------------------------------------------------------------- fixtures

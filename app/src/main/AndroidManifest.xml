@@ -35,9 +35,31 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PulseKraft">
 
+        <!--
+          Portrait, deliberately.
+
+          This is a one-screen instrument held in one hand for about
+          forty seconds, and every layout in it is a single column built
+          around a figure sized to a thumb's width. Rotated, the content
+          is roughly 500dp tall in a 390dp viewport, and the honest
+          options were to compress every dimension or to let the middle
+          of the screen fall off the bottom — which is what it did, and
+          it dropped the instruction, the cost, the list of measurements
+          and the about link with no way to scroll to them.
+
+          A landscape layout would be a second design rather than an
+          adaptation of this one, and it is not wanted. Locking is the
+          honest answer, and the reason is recorded here rather than
+          discovered by a person rotating their phone.
+
+          Large screens ignore this attribute, which is correct: there
+          the window is wide enough for the column to have its margins
+          back.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.PulseKraft">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

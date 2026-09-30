@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,6 +42,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
@@ -226,6 +230,13 @@ internal fun DoneBlock(
         text = verdict(report),
         style = MaterialTheme.typography.headlineSmall,
         color = PulsePalette.OnSurface,
+        // The answer, read before anything else on the screen. The
+        // figures underneath are its evidence, and a screen reader
+        // should not have to walk past them to get to the conclusion.
+        modifier = Modifier.semantics {
+            heading()
+            contentDescription = "${verdict(report)}. ${report.loadedDuringDownload?.medianMs?.let { "${"%.0f".format(it)} milliseconds of latency while the connection was busy" } ?: ""}"
+        },
     )
     Spacer(Modifier.height(34.dp))
 
@@ -288,6 +299,46 @@ internal fun DoneBlock(
         maxLines = 1,
     )
 
+    // The self-check the whole method rests on, and which the README
+    // claimed was on screen and was not.
+    //
+    // `downloadMayBeBufferLimited()` has existed, been documented and had
+    // five tests for the whole life of this app, and nothing ever called
+    // it. A low figure can be the line being slow, or it can be this
+    // app's own receive buffer being the ceiling — and the second case
+    // is the one where the number on screen is a fact about the app
+    // rather than about the connection, which is precisely the thing this
+    // app says it will not do.
+    //
+    // So it is stated, in words, next to the figures it qualifies.
+    if (report.downloadMayBeBufferLimited() == true ||
+        report.uploadMayBeBufferLimited() == true
+    ) {
+        Spacer(Modifier.height(20.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(PulsePalette.Warning.copy(alpha = 0.10f))
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Text(
+                text = "!",
+                style = MaterialTheme.typography.titleMedium,
+                color = PulsePalette.Warning,
+            )
+            Text(
+                text = "This figure may be limited by the app, not your line. It ran " +
+                    "at about the ceiling this app could reach, given the receive " +
+                    "buffer the system granted it.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = PulsePalette.OnSurface,
+            )
+        }
+    }
+
     Spacer(Modifier.height(26.dp))
 
     // The stability trace, and the reference it is measured against is
@@ -306,6 +357,15 @@ internal fun DoneBlock(
         overCeiling = true,
         threshold = report.idleLatency?.medianMs,
         thresholdLabel = "unloaded",
+        // A canvas announces nothing by default, so a blind reader would
+        // step straight over the only picture in the app. Described from
+        // the data rather than in prose written by hand, so it cannot
+        // describe a watch that was not measured.
+        spokenSummary = report.stability?.let { stability ->
+            "Latency stayed between ${"%.0f".format(stability.summary.minMs)} and " +
+                "${"%.0f".format(stability.summary.p95Ms)} milliseconds over the " +
+                "watch. ${stability.verdict.label}."
+        },
         modifier = Modifier.weight(1f),
     )
 
