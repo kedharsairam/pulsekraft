@@ -19,6 +19,15 @@ enum class Phase(val label: String) {
     DONE("Done"),
 }
 
+/**
+ * Gap between idle-latency samples, in milliseconds.
+ *
+ * Wider than the profile's 100ms cadence on purpose, and only for this
+ * phase. See the call site: at 100ms the edge throttles the probe and
+ * the baseline it produces is worse than the line.
+ */
+private const val IDLE_SPACING_MS = 500L
+
 /** Which way the live instrument is currently reading. */
 enum class Reading(val unit: String) {
     LATENCY("ms"),
@@ -56,6 +65,21 @@ data class LiveState(
     val scaleMax: Double,
     /** Bytes moved so far, for the running total. Not on the dial. */
     val bytesSoFar: Long,
+    /**
+     * Goodput over the whole phase so far, in Mbps. Zero on latency
+     * phases.
+     *
+     * Carried separately from the series on purpose. The series holds
+     * per-interval rates, and because a socket buffer arrives all at
+     * once their mean sits well above the true sustained rate — 56 to
+     * 901 Mbps intervals with a median of 414 is not a connection
+     * doing 414. The result screen reports bytes over the measured
+     * window, so the figure quoted while the phase runs has to be
+     * computed the same way, or the app shows one number live and a
+     * different one on the result screen and both are called "the
+     * speed".
+     */
+    val averageMbpsToDate: Double = 0.0,
 )
 
 /** What went wrong, in words a person can read. */
@@ -138,11 +162,25 @@ class Probe(
                         live.max(), LIVE_LATENCY_SCALE, 0L,
                     )
                 }
-                // A gap between samples, not a burst. Back to back they
-                // arrive as a flood, and what came back included regular
-                // 300 ms stalls that were the edge throttling us rather
-                // than the line being slow.
-                Thread.sleep(profile.sampleIntervalMillis)
+                // A gap between samples, not a burst, and for the idle
+                // baseline a wider one than the rest of the test uses.
+                //
+                // The published interval is 100ms and it is right for
+                // the stability watch, where temporal resolution is the
+                // whole point. It was wrong here. Twenty-two requests
+                // 100ms apart is a flood, and it came back with regular
+                // 300ms stalls that were the edge throttling us rather
+                // than the path being slow — which is how a run reported
+                // an unloaded median of 229ms against 76ms measured
+                // under full download load, and a bufferbloat index of
+                // 0.33x. A baseline worse than the load is not a
+                // measurement of the line; it is a measurement of how
+                // hard the probe was leaning on it.
+                //
+                // 500ms is long enough that consecutive samples are
+                // independent and short enough that twenty-two of them
+                // add eleven seconds, which a person will spend waiting.
+                Thread.sleep(maxOf(profile.sampleIntervalMillis, IDLE_SPACING_MS))
             }
 
             onPhase(Phase.DOWNLOAD)
@@ -190,10 +228,14 @@ class Probe(
         peak: Double,
         scaleMax: Double,
         bytes: Long,
+        averageMbpsToDate: Double = 0.0,
     ) {
         runCatching {
             emitTo(
-                LiveState(phase, reading, current, ArrayList(series), peak, scaleMax, bytes),
+                LiveState(
+                    phase, reading, current, ArrayList(series), peak,
+                    scaleMax, bytes, averageMbpsToDate,
+                ),
             )
         }
     }
@@ -282,7 +324,20 @@ class Probe(
         )
         if (instant <= 0.0) return
         series += instant
-        emit(phase, reading, instant, series, series.max(), LIVE_THROUGHPUT_SCALE, last.bytes)
+        // Goodput across every sample taken so far, not the last
+        // interval's rate. Same arithmetic as the reported figure, so
+        // the number on screen does not change when the phase ends.
+        val windowNanos = last.atNanos - samples.first().atNanos
+        val windowBytes = last.bytes - samples.first().bytes
+        val toDate = if (windowNanos > 0L && windowBytes >= 0L) {
+            com.krafttools.pulsekraft.core.Rate.mbpsFromNanos(windowBytes, windowNanos)
+        } else {
+            0.0
+        }
+        emit(
+            phase, reading, instant, series, series.max(),
+            LIVE_THROUGHPUT_SCALE, last.bytes, toDate,
+        )
     }
 
     private fun download(
