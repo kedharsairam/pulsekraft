@@ -191,7 +191,7 @@ and short-body cases — is pure and fully tested on the JVM with no device.
 
 ## Tests
 
-128 JVM unit tests, no device required:
+132 JVM unit tests, no device required:
 
 | Suite | Covers |
 |---|---|
@@ -204,7 +204,8 @@ and short-body cases — is pure and fully tested on the JVM with no device.
 | `VerdictTest` (16) | Every branch of the published sentence, including the cases that were once wrong |
 | `LatencyTest` (14) | RFC 3550 jitter, stability verdicts, thresholds pinned by value |
 | `PolicyTest` (10) | The data-cost rules, including a platform that tells us nothing |
-| `MethodTest` (10) | That the published method still describes what the code computes, and that every published string is shown |
+| `MethodTest` (11) | That the published method still describes what the code computes, and that every published string is shown |
+| `ReadmeAccuracyTest` (4) | That this table is true, and that the README is not promising something the app does not do |
 
 Plus **21 instrumented tests** on a device, which exist because the
 alternative was worse: producing the refused, offline, stopped and failed

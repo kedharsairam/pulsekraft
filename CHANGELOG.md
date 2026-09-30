@@ -5,6 +5,31 @@ All notable changes to PulseKraft.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and
 this project uses [semantic versioning](https://semver.org/).
 
+## [0.1.3] — 2026-10-01
+
+The README, checked against the code it describes.
+
+### Fixed
+
+- **The test table credited `MethodTest` with ten cases; it had eleven.**
+  Wrong long enough to be written, committed, published in a release
+  and quoted back — with every test passing throughout, because a
+  documentation table is not a test.
+
+  A guard now checks the table against the suites that exist, checks
+  that the totals add up, and fails on a handful of specific stale
+  phrases. It caught its own author's arithmetic the first time it ran,
+  which is the strongest evidence anyone is going to get that the thing
+  works.
+
+  This is the fifth sentence in this project to go out of date without
+  anything noticing, after the published statistic, the opt-in that
+  could not be chosen, the self-check that was never shown and the
+  disclosure that was never read. The first four are fixed and
+  documented. This one now fails a test.
+
+---
+
 ## [0.1.2] — 2026-10-01
 
 The last two gaps, and one of them I had described as untestable.
@@ -24,6 +49,13 @@ The last two gaps, and one of them I had described as untestable.
 
 ### Fixed
 
+- **The README's test table was wrong.** It credited `MethodTest` with
+  ten cases and there were eleven — wrong long enough to be written,
+  committed, published in a release and quoted back, with every test
+  passing throughout. A guard now checks the table against reality, and
+  caught its own author's arithmetic the first time it ran. This is the
+  fifth time a sentence in this project has gone out of date without
+  anything noticing, and the first time something now notices on its own.
 - **A screen reader never heard what a test would cost.** The cost line
   and the measurements list are not focusable, so TalkBack walked past
   "About 25 MB of mobile data" and stopped on a control labelled only
