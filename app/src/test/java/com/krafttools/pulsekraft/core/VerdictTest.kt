@@ -146,6 +146,36 @@ class VerdictTest {
     }
 
     @Test
+    fun `a spiky watch is not good for calls at any ratio`() {
+        // Observed on device: 62ms unloaded, 62ms under load, 1.01x —
+        // an excellent result on both counts — printed directly above
+        // "Spiky, 41 to 405 ms". The 405ms excursion IS the stutter.
+        val sentence = Verdict.for_(
+            loadedMs = 62.0, idleMs = 62.0, index = 1.01, spiky = true,
+        )
+        assertEquals("Calls will stutter on spikes", sentence)
+    }
+
+    @Test
+    fun `spikiness does not outrank a line that is simply too slow`() {
+        // A latency past the interactive limit is a bigger problem than
+        // a jump in one that is already unusable, and the sentence has
+        // to name the bigger one.
+        assertEquals(
+            "Too slow for calls or video",
+            Verdict.for_(loadedMs = 900.0, idleMs = 800.0, index = 1.1, spiky = true),
+        )
+    }
+
+    @Test
+    fun `a steady watch with a middling ratio still warns`() {
+        assertEquals(
+            "Usable, but calls may stutter",
+            Verdict.for_(loadedMs = 95.0, idleMs = 30.0, index = 2.6, spiky = false),
+        )
+    }
+
+    @Test
     fun `a missing figure yields incomplete rather than a guess`() {
         assertEquals(Verdict.INCOMPLETE, Verdict.for_(null, 40.0, 1.2))
         assertEquals(Verdict.INCOMPLETE, Verdict.for_(80.0, null, 1.2))

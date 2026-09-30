@@ -1,7 +1,12 @@
 package com.krafttools.pulsekraft.ui
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,9 +40,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
@@ -134,6 +141,42 @@ fun MeasureScreen(modifier: Modifier = Modifier) {
             .systemBarsPadding()
             .padding(horizontal = 24.dp, vertical = 12.dp),
     ) {
+        // ONE flexible child, not two.
+        //
+        // This column used to hold the state block, a weight(1f) spacer
+        // and the footer. DoneBlock's trace is also weight(1f), and both
+        // of those were children of THIS scope — so the leftover height
+        // was split evenly between a plot and an empty gap, which is why
+        // the result screen had a band of nothing under its content that
+        // nothing could fill.
+        //
+        // The content region takes the slack as one box and each block
+        // lays itself out inside it. A block's own weight then resolves
+        // against its own column, which is the only scope where that
+        // means anything.
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                // Room above the footer's own rule. The phase log is
+                // pushed to the bottom of this region by a weight, and
+                // without this its last row sat on the divider with
+                // four pixels between them, which reads as two rules and
+                // a gap rather than as one screen.
+                .padding(bottom = 14.dp),
+            contentAlignment = Alignment.TopStart,
+        ) {
+        // Keyed on the class, not the value. Running state is a new
+        // instance ten times a second, and keying on the instance would
+        // start a crossfade on every live reading — the screen would
+        // strobe. Keying on the class animates the three transitions
+        // that are transitions (idle to running, running to result,
+        // result back to idle) and nothing else.
+        Crossfade(
+            targetState = state::class,
+            animationSpec = tween(340),
+            label = "screen",
+        ) { _ ->
         when (val current = state) {
             MeasureState.Idle -> IdleBlock(
                 onRun = {
@@ -203,8 +246,9 @@ fun MeasureScreen(modifier: Modifier = Modifier) {
                 )
             }
         }
+        }
+        }
 
-        Spacer(Modifier.weight(1f))
         Footer()
     }
 }
@@ -228,7 +272,12 @@ private fun Footer() {
     Column {
         HorizontalDivider(color = PulsePalette.GridLine)
         Text(
-            text = "v${BuildConfig.VERSION_NAME} · to ${BuildConfig.VERSION_CODE}",
+            // The build code went here as "to 1", which reads as a
+            // fragment of a sentence about something. A build code is
+            // what a bug report needs and nobody else does, and it is
+            // one number further down the manifest for anyone who wants
+            // it. The name is the only part worth screen space.
+            text = "PulseKraft ${BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.labelSmall,
             color = PulsePalette.OnSurfaceVariant,
         )
@@ -250,44 +299,133 @@ private fun runTest(
     }, "pulsekraft-ui-driver").apply { isDaemon = true }.start()
 }
 
+/**
+ * The idle screen.
+ *
+ * Everything that was on it before was filler. The app's own name, at
+ * 16sp, in the middle of the screen, saying nothing — the person has
+ * the launcher in front of them and does not need to be told what app
+ * this is. What earns the space instead is the control itself, larger,
+ * and a mark that actually pulses, because that is what the app is
+ * called and until now the name was the only part of it that did
+ * anything.
+ */
 @Composable
 private fun IdleBlock(onRun: () -> Unit) {
-    val light = Profiles.of(Volume.LIGHT)
+    val light = Profiles.of(CURRENT_VOLUME)
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Spacer(Modifier.height(40.dp))
+        Spacer(Modifier.height(24.dp))
+        PulsingControl(onRun)
+        Spacer(Modifier.height(30.dp))
+
         Text(
-            text = "PulseKraft",
+            // An instruction, because a disc with a mark inside it does
+            // not look like something you press. Naming the cost here
+            // rather than after the fact is the whole point of the
+            // Light profile.
+            text = "Tap to measure this connection",
             style = MaterialTheme.typography.titleMedium,
-            color = PulsePalette.OnSurfaceVariant,
+            color = PulsePalette.OnSurface,
+            textAlign = TextAlign.Center,
         )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            // Dividing two Ints gives a Long, and a Long handed to %.0f
+            // throws at format time — a crash on the first frame, which
+            // no unit test reaches.
+            text = "Up to %.0f MB, about %.0f seconds each way".format(
+                light.targetBytes / (1024.0 * 1024.0),
+                (light.graceMillis + light.measureMillis) / 1000.0,
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            color = PulsePalette.OnSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+
         Spacer(Modifier.height(28.dp))
-        // The one control, large and centred, because there is exactly
-        // one thing to do. Everything else the app can tell you comes
-        // after this is pressed.
-        // The one control, and it has to look tappable. A disc one
-        // shade off the background is not a button — in the screenshot
-        // it was nearly invisible, and the idle screen is nothing but
-        // this control, so an invisible control is an empty screen.
-        // A hairline ring is the minimum that makes the hit area
-        // legible, and the surface inside it is what the press lands on.
+        HorizontalDivider(color = PulsePalette.GridLine)
+        Spacer(Modifier.height(14.dp))
+
+        // What the test will measure, as four nouns.
+        //
+        // This was the words "Measuring idle latency · measuring
+        // download · measuring upload · watching for spikes", which is
+        // the same word four times, wraps mid-list with a middot left
+        // dangling at the end of the first line, and reads as an
+        // instruction rather than a list of subjects. The phases have
+        // labels for the running screen, where a sentence is right
+        // because something is happening. Standing still, they want
+        // names.
+        Text(
+            text = MEASUREMENTS.joinToString("   ·   "),
+            style = MaterialTheme.typography.labelMedium.merge(Tabular),
+            color = PulsePalette.OnSurfaceVariant,
+            textAlign = TextAlign.Center,
+            letterSpacing = 0.6.sp,
+        )
+    }
+}
+
+/** The four things a run measures, as nouns. */
+private val MEASUREMENTS = listOf("Latency", "Download", "Upload", "Stability")
+
+/**
+ * The control, breathing.
+ *
+ * A slow pulse on the ring and the mark, and it is the one animation in
+ * the app that runs with nothing happening — which is the point of it.
+ * Every other transition is a response to something; this one is the
+ * app saying it is awake and ready, and it costs no screen space to say
+ * it. It stops the moment a test starts, because from then on the trace
+ * is the thing that moves and two moving things is one too many.
+ *
+ * The period is 1600ms and the amplitude small. A fast pulse reads as
+ * an alert; a slow one reads as breathing, which is what is meant.
+ */
+@Composable
+private fun PulsingControl(onRun: () -> Unit) {
+    val breath = rememberInfiniteTransition(label = "breath")
+    val swell by breath.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "swell",
+    )
+    Box(modifier = Modifier.size(214.dp), contentAlignment = Alignment.Center) {
+        // An echo that expands past the disc and fades on the same
+        // cycle. The static edge stays put so the control's bounds are
+        // always readable — this is the pulse leaving, not the button.
         Box(
             modifier = Modifier
-                .size(196.dp)
+                .size(214.dp)
+                .scale(0.86f + swell * 0.16f)
+                .clip(CircleShape)
+                .border(
+                    width = 1.5.dp,
+                    color = PulsePalette.Primary.copy(alpha = 0.5f * (1f - swell)),
+                    shape = CircleShape,
+                ),
+        )
+        Box(
+            modifier = Modifier
+                .size(214.dp)
                 .clip(CircleShape)
                 .background(PulsePalette.Surface)
                 // border, not background. `background(brush)` paints the
-                // whole area, which turned the control into a solid
-                // purple disc — a ring has to be an outline, and the
-                // brush overload of `border` strokes exactly the
-                // boundary at any density.
+                // whole area, which turns the control into a solid disc;
+                // a ring has to be an outline, and the brush overload of
+                // `border` strokes exactly the boundary at any density.
                 .border(
                     brush = Brush.verticalGradient(
                         listOf(
-                            PulsePalette.Primary.copy(alpha = 0.55f),
+                            PulsePalette.Primary.copy(alpha = 0.45f + swell * 0.35f),
                             PulsePalette.GridLine,
                         )
                     ),
@@ -298,72 +436,58 @@ private fun IdleBlock(onRun: () -> Unit) {
                 .semantics { contentDescription = "Run test" },
             contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                PulseMark()
-            }
+            PulseMark(scale = 0.98f + swell * 0.04f)
         }
-        Spacer(Modifier.height(28.dp))
-        Text(
-            text = "Measures this connection to Cloudflare's nearest edge.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = PulsePalette.OnSurface,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            // Dividing two Ints gives a Long, and a Long handed to %.0f
-            // throws at format time — a crash on the first frame, which
-            // no unit test reaches.
-            text = "Up to %.0f MB, about %.0f seconds each way.".format(
-                light.targetBytes / (1024.0 * 1024.0),
-                (light.graceMillis + light.measureMillis) / 1000.0,
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = PulsePalette.OnSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(26.dp))
-        // What the test will actually measure, named up front. A person
-        // about to spend half a minute watching a trace is entitled to
-        // know what it is for, and the list is the same five bars the
-        // progress track will fill.
-        Text(
-            text = MEASUREMENT_PHASES.drop(1).joinToString("  ·  ") { it.label }
-                .lowercase()
-                .replaceFirstChar { it.uppercase() },
-            style = MaterialTheme.typography.labelMedium.merge(Tabular),
-            color = PulsePalette.OnSurfaceVariant,
-            textAlign = TextAlign.Center,
-            letterSpacing = 0.4.sp,
-        )
     }
 }
 
-/** The mark: a pulse trace, in the two colours of the palette. */
+/**
+ * One beat.
+ *
+ * Flat, spike, deeper dip, flat. The previous mark was a five-point
+ * zigzag, which reads as a broken line rather than a pulse — and the
+ * whole name of the app rests on this shape being recognisable in the
+ * launcher at forty pixels.
+ *
+ * `scale` lets the breathing animation swell the mark without redrawing
+ * it, so the geometry is described once and animated by transform.
+ */
 @Composable
-private fun PulseMark() {
-    Canvas(modifier = Modifier.size(96.dp)) {
+private fun PulseMark(scale: Float = 1f) {
+    Canvas(modifier = Modifier.size(104.dp).scale(scale)) {
         val w = size.width
         val h = size.height
-        val mid = h / 2f
-        val stroke = w * 0.075f
-        fun point(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+        val baseline = h * 0.52f
         val path = androidx.compose.ui.graphics.Path().apply {
-            moveTo(w * 0.10f, mid)
-            lineTo(w * 0.34f, mid)
-            lineTo(w * 0.46f, h * 0.16f)
-            lineTo(w * 0.60f, h * 0.84f)
-            lineTo(w * 0.72f, mid)
-            lineTo(w * 0.82f, h * 0.32f)
-            lineTo(w * 0.90f, mid)
+            moveTo(w * 0.06f, baseline)
+            lineTo(w * 0.30f, baseline)
+            // The upstroke is fast and the downstroke faster, which is
+            // what makes it read as a heartbeat rather than a hill.
+            cubicTo(
+                w * 0.38f, baseline,
+                w * 0.40f, h * 0.20f,
+                w * 0.48f, h * 0.20f,
+            )
+            cubicTo(
+                w * 0.56f, h * 0.20f,
+                w * 0.58f, h * 0.82f,
+                w * 0.64f, h * 0.82f,
+            )
+            cubicTo(
+                w * 0.70f, h * 0.82f,
+                w * 0.71f, baseline,
+                w * 0.79f, baseline,
+            )
+            lineTo(w * 0.94f, baseline)
         }
         drawPath(
             path = path,
             color = PulsePalette.Pulse,
-            style = Stroke(width = stroke, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round),
+            style = Stroke(
+                width = w * 0.072f,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+            ),
         )
     }
 }
@@ -442,11 +566,30 @@ private val MEASUREMENT_PHASES = listOf(
  */
 @Composable
 private fun ReadingCluster(live: LiveState) {
-    val shown by animateFloatAsState(
-        targetValue = live.current.toFloat(),
-        animationSpec = spring(dampingRatio = 0.85f, stiffness = 260f),
-        label = "reading",
-    )
+    // The figure on screen is the value at the trace's head, not the
+    // last interval's raw rate.
+    //
+    // This is the most important correction in the file. A socket buffer
+    // hands over several megabytes in one read and the next read waits,
+    // so the instantaneous rate spends real stretches of a transfer near
+    // zero. The screenshot that prompted this showed "0.0 Mbps" as the
+    // largest text on the screen while the plot beside it was full of
+    // data and half a megabyte had moved.
+    //
+    // Worse, it was the app publishing the exact artefact it refuses to
+    // report anywhere else — the throughput peak was suppressed three
+    // revisions ago because it is the kernel batching and not the
+    // connection, and here the same batching was the headline. A number
+    // a reader will act on has to mean the same thing as the number the
+    // method statement describes.
+    //
+    // Taking the trace's own smoothed series makes the guarantee
+    // checkable rather than promised: the figure on screen IS the
+    // rightmost point of the line below it, by construction.
+    val shown = live.displayed()
+    // No spring. The value is already a nine-sample average arriving ten
+    // times a second, and animating it again adds lag to a number whose
+    // whole virtue was that it matches the line.
     // Dynamic Type is honoured up to a point and then stopped, which is
     // a deliberate decision rather than an oversight. A hero figure
     // that reflows off the edge at 2x is not an accessible instrument,
@@ -457,7 +600,7 @@ private fun ReadingCluster(live: LiveState) {
 
     Row(verticalAlignment = Alignment.Bottom) {
         Text(
-            text = formatReading(live.reading, shown.toDouble()),
+            text = formatReading(live.reading, shown),
             style = MaterialTheme.typography.displayLarge.merge(Tabular).copy(
                 fontSize = size,
                 lineHeight = size * 0.92f,
@@ -520,6 +663,19 @@ private fun ReadingCluster(live: LiveState) {
             maxLines = 1,
         )
     }
+}
+
+/**
+ * The value the instrument should show right now.
+ *
+ * The last point of the smoothed series, which is the same series the
+ * trace draws. Falling back to the raw reading only when there is not
+ * enough history to smooth, which is the first fraction of a second of
+ * a phase.
+ */
+private fun LiveState.displayed(): Double {
+    if (series.size < 2) return current
+    return smoothedForDisplay(series).lastOrNull() ?: current
 }
 
 /**
@@ -602,7 +758,12 @@ private fun MeasureState.Running.closeOffPhase(): List<PhaseFigure> {
         // the figure the result screen will print.
         else -> live.averageMbpsToDate
             .takeIf { it > 0.0 }
-            ?.let { "%.0f Mbps".format(it) }
+            // "0 Mbps" reads as a broken app rather than as a very slow
+            // one, because it is what a failed transfer would print
+            // too. Below one megabit, keep a decimal — the run that
+            // produced this had genuinely transferred, just badly, and
+            // the number should say so.
+            ?.let { if (it >= 1.0) "%.0f Mbps".format(it) else "%.1f Mbps".format(it) }
             ?: return done
     }
     if (done.any { it.phase == phase }) return done
@@ -665,15 +826,22 @@ private fun RunningBlock(state: MeasureState.Running) {
                 "above %.0f ms".format(VOICE_LIMIT_MS)
             } else null,
             logarithmic = live.reading != Reading.LATENCY,
-            // Capped, and the cap is the point. A plot given every
-            // remaining pixel was 457dp tall: at that height the shape
-            // of a rate series stops reading as a shape and starts
-            // reading as noise, because the vertical resolution per
-            // megabit far exceeds anything the signal actually varies
-            // over. A chart wants a sane aspect ratio. The space the
-            // plot gives up goes to the log below, which fills with
-            // results as the run proceeds.
-            modifier = Modifier.heightIn(max = 330.dp),
+            // A FIXED height, not a cap on a weighted one.
+            //
+            // A plot given every remaining pixel was 457dp tall: at
+            // that height the shape of a rate series stops reading as a
+            // shape and starts reading as noise, because the vertical
+            // resolution per megabit far exceeds anything the signal
+            // actually varies over.
+            //
+            // It was then given `heightIn(max = 330.dp)` alongside a
+            // weighted spacer, and the pair could still exceed the
+            // column — the log's last row was clipped mid-glyph by the
+            // footer on a run with three completed phases. A fixed
+            // height plus a weighted spacer cannot overflow: the plot
+            // is known, the log is bounded to three rows, and whatever
+            // is left goes to the spacer where nothing can clip.
+            modifier = Modifier.height(300.dp),
         )
 
         Spacer(Modifier.height(10.dp))
@@ -726,7 +894,11 @@ private fun RunningBlock(state: MeasureState.Running) {
 private fun PhaseLog(done: List<PhaseFigure>) {
     Column {
         HorizontalDivider(color = PulsePalette.GridLine)
-        done.takeLast(4).forEach { entry ->
+        // Three, not four. Four rows of log plus a fixed plot is more
+        // than a short screen holds, and a row cut in half by the
+        // footer is worse than a row that was never drawn — the earlier
+        // phases are the least interesting ones by then.
+        done.takeLast(3).forEach { entry ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -796,12 +968,12 @@ private fun FailedBlock(state: MeasureState.Failed) {
  * signature is not admitting to.
  */
 @Composable
-private fun ColumnScope.DoneBlock(
+private fun DoneBlock(
     report: TestReport,
     methodOpen: Boolean,
     onToggleMethod: () -> Unit,
     onAgain: () -> Unit,
-) {
+) = Column(modifier = Modifier.fillMaxSize()) {
     // A refused or truncated transfer is stated before any figure, so a
     // partial result is never read as a complete one.
     report.rejectedBecause?.let {
@@ -872,10 +1044,23 @@ private fun ColumnScope.DoneBlock(
             // happens when the unloaded baseline was the worse of the
             // two. Printing it as "0.33x" invites the reader to treat a
             // broken baseline as an excellent result.
-            report.bufferbloatIndex
-                ?.takeIf { it >= 1.0 }
-                ?.let { "%.2fx".format(it) }
-                ?: report.bufferbloatIndex?.let { "baseline unreliable" },
+            report.bufferbloatIndex?.let { ratio ->
+                when {
+                    // 0.98 is a dead heat, not an inverted measurement,
+                    // and calling it "baseline unreliable" would be
+                    // crying wolf over noise. Load simply did not add
+                    // anything, which is a result.
+                    ratio >= 0.85 -> if (ratio >= 1.0) {
+                        "%.2fx".format(ratio)
+                    } else {
+                        "no added latency"
+                    }
+                    // Below that, load made the line measurably faster
+                    // and the baseline is worse than the load it was
+                    // supposed to be measured against.
+                    else -> "baseline unreliable"
+                }
+            },
             report.idleLatency?.let { "unloaded %.0f ms".format(it.medianMs) },
         ).joinToString("   ·   "),
         style = MaterialTheme.typography.labelLarge.merge(Tabular),
@@ -904,9 +1089,11 @@ private fun ColumnScope.DoneBlock(
         modifier = Modifier.weight(1f),
     )
 
-    Spacer(Modifier.height(20.dp))
-    HorizontalDivider(color = PulsePalette.GridLine)
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(22.dp))
+
+    // No divider here. The one below the trace is enough, and a second
+    // hairline forty pixels under the first reads as a mistake rather
+    // than as structure — it divides a gap, not two things.
 
     // The supporting figures, as one group four lines tall, set 3dp
     // apart with nothing between them. They are a table, and a table
@@ -920,18 +1107,34 @@ private fun ColumnScope.DoneBlock(
     })
     Spacer(Modifier.height(3.dp))
     FigureRow("Unloaded latency", report.idleLatency?.let {
-        "%.0f ms   ±%.0f".format(it.medianMs, it.jitterMs)
+        "%.0f ms   jitter ±%.0f".format(it.medianMs, it.jitterMs)
     })
     Spacer(Modifier.height(3.dp))
     report.stability?.let {
-        FigureRow("Stability", "${it.verdict.label}   ±%.0f ms".format(
-            (it.summary.p95Ms - it.summary.minMs) / 2.0,
+        // A RANGE, not a ±. The stability row was printing
+        // (p95 - min) / 2 under the same ± as the jitter above, and the
+        // two numbers were computed from different things — RFC 3550
+        // jitter is the mean absolute deviation between consecutive
+        // samples, that half-range is not jitter under any name — and
+        // they can differ by an order of magnitude on the same run.
+        // A reader had no way to know which was which.
+        //
+        // The range is also the more honest shape for a watch whose
+        // whole subject is excursions: "48 – 210 ms" says what actually
+        // happened between the best and the ninety-fifth sample.
+        FigureRow("Stability", "%s   %.0f–%.0f ms".format(
+            it.verdict.label, it.summary.minMs, it.summary.p95Ms,
         ))
     }
 
-    Spacer(Modifier.height(22.dp))
+    Spacer(Modifier.height(26.dp))
 
-    ActionRow("Test again", PulsePalette.Primary, onAgain)
+    // The primary action on this screen, as a primary action. It was a
+    // line of purple text with the same weight and colour as the
+    // disclosure below it and a hundred pixels of nothing between them,
+    // so the two read as a pair of orphaned links rather than as
+    // "the thing you press" and "the small print".
+    PrimaryAction("Test again", onAgain)
     // The method is a paragraph, and paragraphs belong collapsed. Four
     // lines of it on the main screen is the wall of text this
     // workspace does not tolerate.
@@ -940,8 +1143,8 @@ private fun ColumnScope.DoneBlock(
         tint = PulsePalette.OnSurfaceVariant,
         onClick = onToggleMethod,
     )
+    Spacer(Modifier.height(8.dp))
     if (methodOpen) {
-        Spacer(Modifier.height(4.dp))
         // The one place in this app that scrolls, and deliberately so.
         // The no-scroll rule exists so a view cannot hide its own
         // priorities; a method statement is not a view, it is a
@@ -970,10 +1173,42 @@ private fun ColumnScope.DoneBlock(
 }
 
 /**
- * A row the reader can act on, with a touch target that is actually
- * a touch target. A 48dp minimum is not a style preference, it is the
- * smallest reliably hittable size, and the previous 32dp-tall text
- * link was under it.
+ * The screen's primary action, filled.
+ *
+ * 56dp tall rather than the 48dp minimum, because this is the one
+ * control a person comes back for and the one they press without
+ * reading. Rounded at 18dp — closer to a circle than the corners
+ * elsewhere on the screen, because it is the only pressable thing here.
+ *
+ * The label is drawn in the background colour rather than white. The
+ * accent is light, so dark-on-accent is both the higher contrast of the
+ * two options (about 7:1) and the one that keeps the button from
+ * glowing out of a screen that is otherwise almost entirely dark.
+ */
+@Composable
+private fun PrimaryAction(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(PulsePalette.Primary)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleMedium,
+            color = PulsePalette.Background,
+        )
+    }
+}
+
+/**
+ * A secondary row the reader can act on, with a touch target that is
+ * actually a touch target. A 48dp minimum is not a style preference,
+ * it is the smallest reliably hittable size, and the previous 32dp-tall
+ * text link was under it.
  */
 @Composable
 private fun ActionRow(label: String, tint: Color, onClick: () -> Unit) {
@@ -1035,14 +1270,39 @@ private fun verdict(report: TestReport): String = Verdict.for_(
     loadedMs = report.loadedDuringDownload?.medianMs,
     idleMs = report.idleLatency?.medianMs,
     index = report.bufferbloatIndex,
+    spiky = report.stability?.verdict == Latency.Verdict.SPIKY,
 )
 
+/**
+ * The top of the result trace, fitted to the bulk of the samples.
+ *
+ * This used to be max(p95 x 1.6, median x 2.5), which is the same
+ * mistake the live trace had already been corrected for, left behind in
+ * a second copy. A watch whose subject is excursions has a p95 well
+ * above its median by definition, so scaling to it put the ordinary
+ * samples in the bottom sixth of the plot with an empty band above —
+ * and the band above the unloaded line is the part of this plot that
+ * means something, so filling it with nothing wasted the one region a
+ * reader looks at.
+ *
+ * Ninety percent sets the top and the excursion above it is pinned and
+ * drawn hollow, which is the same arrangement as the live trace and for
+ * the same reason. The unloaded reference line is guaranteed to be on
+ * the plot whatever the samples do, because a trace whose reference line
+ * has been scaled off the top cannot answer the question it exists to
+ * answer.
+ */
 private fun stabilityCeiling(report: TestReport): Double {
     val sorted = report.stabilitySeries.sorted()
-    if (sorted.isEmpty()) return 1.0
-    val median = sorted[sorted.size / 2]
-    val p95 = sorted[(sorted.size * 0.95).toInt().coerceAtMost(sorted.size - 1)]
-    return max(max(p95 * 1.6, median * 2.5), 1.0)
+    if (sorted.size < 4) return 1.0
+    fun at(fraction: Double) = sorted[
+        (sorted.size * fraction).toInt().coerceIn(0, sorted.size - 1)
+    ]
+    val p90 = at(0.90) * 1.25
+    val unloaded = report.idleLatency?.medianMs ?: 0.0
+    // Room for the reference line and its label even on a perfectly
+    // steady watch, which would otherwise sit on the floor.
+    return max(max(p90, unloaded * 1.8), 1.0)
 }
 
 private fun formatReading(reading: Reading, value: Double): String = when (reading) {

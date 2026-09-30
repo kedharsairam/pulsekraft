@@ -43,7 +43,12 @@ object Verdict {
      * So: is it fast enough at all, and only then does the question of
      * how much the line degrades under load become the interesting one.
      */
-    fun for_(loadedMs: Double?, idleMs: Double?, index: Double?): String {
+    fun for_(
+        loadedMs: Double?,
+        idleMs: Double?,
+        index: Double?,
+        spiky: Boolean = false,
+    ): String {
         if (loadedMs == null || idleMs == null || index == null) return INCOMPLETE
         // Guarded rather than trusted: a single bad round trip can make
         // the ratio enormous, and no ratio should be able to outrank a
@@ -73,6 +78,16 @@ object Verdict {
             // loaded/idle is necessarily below 1. A "worse under load"
             // variant here can never print.
             idleSlow -> "Slow even when nothing is using it"
+            // Spiky wins over the ratio, and it is checked here for the
+            // same reason the absolute latencies are: the headline is
+            // the sentence a person acts on, and this screen was
+            // printing "Good for calls" directly above "Spiky, 41 to
+            // 405 ms". A 405ms excursion IS the call stuttering. The
+            // ratio measures how much a full-speed transfer inflates
+            // the queue, which is a different question, and answering it
+            // while the answer to the question that was asked sat on the
+            // screen two lines below is worse than answering neither.
+            spiky -> "Calls will stutter on spikes"
             ratio > 4.0 -> "Fine for browsing, poor for calls"
             ratio > 2.0 -> "Usable, but calls may stutter"
             else -> "Good for calls"
