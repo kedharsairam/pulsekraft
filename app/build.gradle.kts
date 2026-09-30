@@ -16,8 +16,24 @@ android {
         applicationId = "com.krafttools.pulsekraft"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
+    }
+
+    testOptions {
+        unitTests {
+            // `android.util.Log` throws by default in a JVM test, and the
+            // socket layer logs the handshake and the read-back buffer on
+            // the way through. The socket tests reach that code — the
+            // throw is proof they got past the TLS handshake — so
+            // returning defaults is what lets them assert the thing they
+            // were written to assert.
+            //
+            // Only the log. Anything that actually needs Android is left
+            // throwing, because a test that quietly got nulls from a
+            // framework call is a test that quietly stopped testing.
+            isReturnDefaultValues = true
+        }
     }
 
     buildTypes {

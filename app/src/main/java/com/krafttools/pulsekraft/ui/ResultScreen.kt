@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.background
@@ -296,7 +297,11 @@ internal fun DoneBlock(
         ).joinToString("   ·   "),
         style = MaterialTheme.typography.labelLarge.merge(Tabular),
         color = PulsePalette.OnSurfaceVariant,
-        maxLines = 1,
+        // Not one line. At 1.5x text this read "baseline unreliable ·
+        // unloaded 135" with the unit silently cut off, which is the
+        // worst possible way to lose a word: the number still looks
+        // like a number.
+        maxLines = 2,
     )
 
     // The self-check the whole method rests on, and which the README
@@ -510,29 +515,66 @@ internal fun ActionRow(label: String, tint: Color, onClick: () -> Unit) {
  * Without `tnum` the right-hand values sit at a ragged left edge and
  * the table stops reading as a table.
  */
+/**
+ * One line of the supporting table.
+ *
+ * A two-column table stops being a table when the text grows: at 1.5x
+ * on a phone, "135 ms  jitter ±49" wrapped onto two lines and dragged
+ * its label out of line with the rows above and below. So the row
+ * measures what it has, and stacks instead of squeezing.
+ *
+ * The measure is the row's own width against the length of its text,
+ * not a device class — because the thing that breaks it is the
+ * combination, and a tablet at 2x and a phone at 1.3x break it in the
+ * same way.
+ */
 @Composable
 internal fun FigureRow(label: String, value: String?) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 30.dp)
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = PulsePalette.OnSurfaceVariant,
-        )
-        Text(
-            // The window matters as much as the rate. "107 Mbps over two
-            // seconds" and "107 Mbps over ten" are different claims, and
-            // quoting the first alone is how a burst becomes a speed.
-            text = value ?: "—",
-            style = MaterialTheme.typography.bodyLarge.merge(Tabular),
-            color = PulsePalette.OnSurface,
-        )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val fitsBeside = maxWidth > 220.dp && value.orEmpty().length <= 22
+        if (fitsBeside) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 30.dp)
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = PulsePalette.OnSurfaceVariant,
+                )
+                Text(
+                    // The window matters as much as the rate. "107 Mbps
+                    // over two seconds" and "107 Mbps over ten" are
+                    // different claims, and quoting the first alone is
+                    // how a burst becomes a speed.
+                    text = value ?: "—",
+                    style = MaterialTheme.typography.bodyLarge.merge(Tabular),
+                    color = PulsePalette.OnSurface,
+                    textAlign = TextAlign.End,
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp),
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PulsePalette.OnSurfaceVariant,
+                )
+                Text(
+                    text = value ?: "—",
+                    style = MaterialTheme.typography.bodyLarge.merge(Tabular),
+                    color = PulsePalette.OnSurface,
+                )
+            }
+        }
     }
 }
 

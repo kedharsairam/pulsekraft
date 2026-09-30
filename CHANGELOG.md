@@ -40,10 +40,48 @@ Fixes found by auditing a finished v0.1.0 against its own documentation.
   is one the server waits on rather than rejects — nothing logged,
   nothing thrown, a sixty-second timeout.
 
+### Verified on a second device
+
+A Pixel 8a on **mobile data**, which exercised the cost policy for real:
+the idle screen read "About 25 MB of mobile data", selecting the heavier
+profile re-priced it to 100 MB and refused immediately, and the run that
+followed survived a rotation — the fix for the configuration-change bug
+above, seen working rather than inferred.
+
+Rotating the phone mid-test used to lose the run entirely.
+
+### Fixed here
+
+- **A refused control still said "Tap to measure this connection."** The
+  mark greys and stops breathing, the refusal appears, and the line above
+  kept inviting a press that would do nothing. Found on a real cellular
+  connection; it now reads "Not available on this connection".
+- **The result screen broke at large text sizes.** At 1.5x a line read
+  "unloaded 135" with its unit silently cut off — the worst way to lose
+  a word, because the number still looks like a number — and "135 ms
+  jitter ±49" wrapped and dragged its label out of line with the rows
+  around it. The table now stacks when the text outgrows it, and there
+  is an instrumented test at 2x so it cannot come back.
+- **A short viewport lost the middle of the idle screen.** The portrait
+  lock is ignored on any display of 600dp or more, so a tablet and
+  split-screen both got the clipped layout the lock was meant to
+  prevent. The column now overflows and scrolls, which is a constraint
+  rather than a hidden decision.
+
+### Added
+
+- **The socket is tested against a real one** — a local TLS server with
+  a throwaway certificate generated at run time, asserting the granted
+  buffer read-back, the request/response crossing, an interim
+  `100 Continue` being skipped, and a closed port being refused. The
+  previous note said this needed a certificate the project did not have;
+  generating one takes a second.
+
 ### Known gaps
 
-- The socket itself is still untested: TLS, buffer negotiation, a body
-  arriving in pieces. These need a real network or a certificate.
+- The edge itself is untested: its real behaviour, its real latency, and
+  which data centre answers. None of that can be tested honestly from
+  here.
 
 ## [0.1.0] — 2026-09-30
 

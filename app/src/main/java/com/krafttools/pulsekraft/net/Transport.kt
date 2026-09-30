@@ -107,11 +107,23 @@ class MeasuredConnection(
     var grantedSendBuffer: Int = 0
         private set
 
+    /**
+     * Opens the connection.
+     *
+     * [tlsFactory] exists so the socket can be tested against a local
+     * server with a throwaway certificate. The default is the platform
+     * one, which is what production uses and what the test never wants;
+     * a test that cannot reach a real `SSLSocketFactory` is a test of
+     * nothing. It is a parameter rather than a global for that reason —
+     * nothing else in this app can be influenced from outside.
+     */
     fun connect(
         requestedReceiveBuffer: Int,
         connectTimeoutMs: Int,
         readTimeoutMs: Int,
         requestedSendBuffer: Int = 64 * 1024,
+        tlsFactory: javax.net.ssl.SSLSocketFactory =
+            javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory,
     ) {
         val plain = Socket()
         try {
@@ -146,7 +158,7 @@ class MeasuredConnection(
         val tls = try {
             // getDefault() is declared to return SocketFactory, so the
             // narrowing cast is what exposes the SSL methods.
-            val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+            val factory = tlsFactory
             // Wrapping the socket we already configured, not connecting
             // by name: a fresh connect would negotiate its own window,
             // and the buffer we set before it would be ignored.

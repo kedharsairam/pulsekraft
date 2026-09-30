@@ -132,7 +132,25 @@ internal fun IdleBlock(
 ) {
     val profile = Profiles.of(volume)
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            // Scrollable, and only ever as much as the content needs.
+            //
+            // The no-scroll rule is about hierarchy, not physics: a
+            // screen that scrolls because its content does not fit is
+            // showing a constraint, whereas one that scrolls because
+            // something was pushed below the fold is hiding a decision.
+            // Only the second is a fault.
+            //
+            // This matters because "portrait only" is not the same as
+            // "tall enough". Android ignores the orientation lock on any
+            // display of 600dp or more, so a tablet gets this column in
+            // landscape whatever the manifest says — and split-screen on
+            // a phone does the same thing. Locking the orientation fixed
+            // the phone and left the underlying problem in place, so the
+            // column is now allowed to overflow and scroll rather than
+            // lose its middle.
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -146,9 +164,23 @@ internal fun IdleBlock(
         Text(
             // An instruction, because a disc with a mark inside it does
             // not look like something you press.
-            text = "Tap to measure this connection",
+            //
+            // And it changes when the control is dead. Verified on a
+            // real cellular connection: selecting the heavier profile on
+            // mobile data correctly greys the mark and stops the pulse,
+            // while the line above it still said "Tap to measure" — an
+            // instruction to press something that will not press.
+            text = if (refusal == null) {
+                "Tap to measure this connection"
+            } else {
+                "Not available on this connection"
+            },
             style = MaterialTheme.typography.titleMedium,
-            color = PulsePalette.OnSurface,
+            color = if (refusal == null) {
+                PulsePalette.OnSurface
+            } else {
+                PulsePalette.OnSurfaceVariant
+            },
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(6.dp))

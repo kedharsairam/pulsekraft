@@ -2,6 +2,7 @@ package com.krafttools.pulsekraft
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -12,6 +13,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -85,22 +88,23 @@ class MeasureUiTest {
     private var chose: Volume? = null
     private var wasCancelled = false
 
+    @Composable
+    private fun Content() {
+        MeasureContent(
+            state = state,
+            methodOpen = false,
+            onRun = { ranWith = it },
+            onCancel = { wasCancelled = true },
+            onVolume = { chose = it },
+            onAbout = {},
+            onAgain = {},
+            onToggleMethod = {},
+        )
+    }
+
     private fun show(vararg states: MeasureState) {
         compose.setContent {
-            PulseKraftTheme {
-                Box(Modifier.fillMaxSize()) {
-                    MeasureContent(
-                        state = state,
-                        methodOpen = false,
-                        onRun = { ranWith = it },
-                        onCancel = { wasCancelled = true },
-                        onVolume = { chose = it },
-                        onAbout = {},
-                        onAgain = {},
-                        onToggleMethod = {},
-                    )
-                }
-            }
+            PulseKraftTheme { Box(Modifier.fillMaxSize()) { Content() } }
         }
         states.forEach {
             state = it
@@ -334,6 +338,25 @@ class MeasureUiTest {
     }
 
     @Test
+    fun aRefusedControlDoesNotStillSayPressMe() {
+        // Found on a real cellular connection: the mark greys and stops
+        // breathing, the refusal appears — and the line above still said
+        // "Tap to measure this connection", which is an instruction to
+        // press something that will not press.
+        val link = LinkState(connected = true, link = Link.CELLULAR, metered = true)
+        val reason = (Policy.decide(link, Volume.FULL)
+            as? com.krafttools.pulsekraft.core.Permission.Refuse)?.reason
+        show(idle(Volume.FULL, link, reason))
+        compose.onNodeWithText("Not available on this connection").assertIsDisplayed()
+        assertTrue(
+            "the instruction must not survive a refusal",
+            compose.onAllNodesWithText("Tap to measure this connection")
+                .fetchSemanticsNodes().isEmpty(),
+        )
+    }
+
+
+    @Test
     fun theVerdictIsReadBeforeItsEvidence() {
         // The answer is the sentence a person acts on, so it carries a
         // heading and a description that includes the figure behind it.
@@ -353,6 +376,37 @@ class MeasureUiTest {
         compose.onNodeWithContentDescription(
             "Latency stayed between 42 and 85 milliseconds over the watch. Steady.",
         ).assertIsDisplayed()
+    }
+
+    @Test
+    fun nothingIsCutOffWhenTheTextIsLarge() {
+        // Found by turning the system font scale up on a phone and
+        // looking, which is the only way this class of bug is ever
+        // found: "135 ms  jitter ±49" wrapped, dragged its label out of
+        // line with the rows around it, and a separate line lost its
+        // unit entirely — "unloaded 135" with the "ms" silently gone,
+        // which is the worst way to lose a word because the number still
+        // looks like a number.
+        // The same one-shot content the other tests use, with the
+        // density overridden. Two `setContent` calls on one activity is
+        // the error this harness was written to avoid.
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalDensity provides
+                    androidx.compose.ui.unit.Density(density = 3f, fontScale = 2f),
+            ) {
+                PulseKraftTheme { Box(Modifier.fillMaxSize()) { Content() } }
+            }
+        }
+        state = MeasureState.Done(report(Latency.Verdict.STEADY, 135.0, 84.0))
+        compose.waitForIdle()
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val cut = compose.onAllNodes(
+            SemanticsMatcher.keyIsDefined(SemanticsProperties.Text),
+        ).fetchSemanticsNodes().filter {
+            it.boundsInRoot.bottom > root.bottom + 1f
+        }
+        assertTrue("large text is cut off: $cut", cut.isEmpty())
     }
 
     // ------------------------------------------------------------- fixtures
