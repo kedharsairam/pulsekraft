@@ -126,7 +126,9 @@ class MeasureUiTest {
         ranWith = null
         show(idle(Volume.FULL))
         compose.onNodeWithText("Tap to measure this connection").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Run test").performClick()
+        compose.onNodeWithContentDescription(
+            "Run test. About 100 MB on Wi-Fi · 9 seconds each way.",
+        ).performClick()
         assertEquals("the control ran the wrong profile", Volume.FULL, ranWith)
     }
 
@@ -335,6 +337,32 @@ class MeasureUiTest {
         // rate. The unit and the figure are now one description.
         show(runningDownload())
         compose.onNodeWithContentDescription("Download 97.5 Mbps").assertIsDisplayed()
+    }
+
+    @Test
+    fun theControlSpeaksTheCost() {
+        // Found by enabling TalkBack and reading the accessibility tree
+        // rather than by reasoning about it. The cost line and the list
+        // of measurements are both non-focusable, so a screen reader
+        // walked past "About 25 MB of mobile data" and stopped on a
+        // control labelled only "Run test" — and for an app whose whole
+        // argument is that it will not spend your data without saying
+        // so, that is the one sentence that must be spoken.
+        show(idle(Volume.LIGHT))
+        compose.onNodeWithContentDescription(
+            "Run test. About 25 MB on Wi-Fi · 4 seconds each way.",
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun aRefusedControlSpeaksTheReason() {
+        val link = LinkState(connected = true, link = Link.CELLULAR, metered = true)
+        val reason = (Policy.decide(link, Volume.FULL)
+            as? com.krafttools.pulsekraft.core.Permission.Refuse)?.reason
+        show(idle(Volume.FULL, link, reason))
+        compose.onNodeWithContentDescription(
+            "Test unavailable. ${reason!!.trimEnd('.')}.",
+        ).assertIsDisplayed()
     }
 
     @Test

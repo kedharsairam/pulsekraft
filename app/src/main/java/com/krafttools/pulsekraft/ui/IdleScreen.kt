@@ -158,7 +158,33 @@ internal fun IdleBlock(
         VolumeSelector(volume, onVolume)
         Spacer(Modifier.height(30.dp))
 
-        PulsingControl(onRun, enabled = refusal == null)
+        // The cost is spoken by the control, because on this screen the
+        // control is the only focusable thing that matters.
+        //
+        // Found by enabling TalkBack and reading the accessibility tree
+        // rather than by reasoning about it: the cost line and the list
+        // of measurements are both non-focusable, so a screen reader
+        // walked straight past "About 25 MB of mobile data" and stopped
+        // on a control labelled only "Run test". For an app whose entire
+        // argument is that it will not spend your data without saying so,
+        // the one sentence that must be heard is the one about the data.
+        PulsingControl(
+            onRun = onRun,
+            enabled = refusal == null,
+            spokenLabel = buildString {
+                if (refusal == null) {
+                    append("Run test. ")
+                    append(costLine(volume, link))
+                    append('.')
+                } else {
+                    append("Test unavailable. ")
+                    // The reasons already end in full stops, and adding
+                    // another made the app say "…for the full test..".
+                    append(refusal.trimEnd('.'))
+                    append('.')
+                }
+            },
+        )
         Spacer(Modifier.height(30.dp))
 
         Text(
@@ -341,7 +367,11 @@ internal val MEASUREMENTS = listOf("Latency", "Download", "Upload", "Stability")
  * an alert; a slow one reads as breathing, which is what is meant.
  */
 @Composable
-internal fun PulsingControl(onRun: () -> Unit, enabled: Boolean = true) {
+internal fun PulsingControl(
+    onRun: () -> Unit,
+    enabled: Boolean = true,
+    spokenLabel: String = "Run test",
+) {
     val breath = rememberInfiniteTransition(label = "breath")
     val swell by breath.animateFloat(
         initialValue = 0f,
@@ -355,7 +385,13 @@ internal fun PulsingControl(onRun: () -> Unit, enabled: Boolean = true) {
     // A control the app will not press stops breathing. The pulse said
     // "ready", and when the answer is no, saying ready is a lie.
     if (!enabled) {
-        StaticMark(214.dp, PulsePalette.GridLine)
+        // The refused control keeps its place in the tree, and its
+        // description, even though it is not pressable. It used to
+        // return early and render a bare mark — which meant the one
+        // moment a person most needs to hear what is wrong was the one
+        // moment a screen reader found nothing at all. Silence is not
+        // the same as "nothing to do here".
+        StaticMark(214.dp, PulsePalette.GridLine, spokenLabel)
         return
     }
     Box(modifier = Modifier.size(214.dp), contentAlignment = Alignment.Center) {
@@ -393,7 +429,7 @@ internal fun PulsingControl(onRun: () -> Unit, enabled: Boolean = true) {
                     width = 1.5.dp,
                 )
                 .clickable(onClick = onRun)
-                .semantics { contentDescription = "Run test" },
+                .semantics { contentDescription = spokenLabel },
             contentAlignment = Alignment.Center,
         ) {
             PulseMark(scale = 0.98f + swell * 0.04f)
@@ -409,12 +445,17 @@ internal fun PulsingControl(onRun: () -> Unit, enabled: Boolean = true) {
  * the absence of one, and the reason is on screen underneath it.
  */
 @Composable
-internal fun StaticMark(size: androidx.compose.ui.unit.Dp, tint: Color) {
+internal fun StaticMark(
+    size: androidx.compose.ui.unit.Dp,
+    tint: Color,
+    spokenLabel: String,
+) {
     Box(
         modifier = Modifier
             .size(size)
             .clip(CircleShape)
-            .background(PulsePalette.Surface),
+            .background(PulsePalette.Surface)
+            .semantics { contentDescription = spokenLabel },
         contentAlignment = Alignment.Center,
     ) {
         Box(

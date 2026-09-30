@@ -191,13 +191,14 @@ and short-body cases — is pure and fully tested on the JVM with no device.
 
 ## Tests
 
-122 JVM unit tests, no device required:
+128 JVM unit tests, no device required:
 
 | Suite | Covers |
 |---|---|
 | `ProtocolTest` (21) | Chunk framing, status codes, short bodies, truncated responses |
 | `TransportHeadTest` (10) | The request bytes, byte for byte |
 | `TransportSocketTest` (5) | A real TLS socket against a local server |
+| `EdgeContractTest` (6) | The real edge's shape — skipped, not failed, with no network |
 | `RateTest` (18) | Goodput, percentiles, nanosecond arithmetic, bufferbloat indexing |
 | `BufferTest` (17) | Bandwidth-delay product, buffer ceilings, the self-check against a result |
 | `VerdictTest` (16) | Every branch of the published sentence, including the cases that were once wrong |
@@ -205,7 +206,7 @@ and short-body cases — is pure and fully tested on the JVM with no device.
 | `PolicyTest` (10) | The data-cost rules, including a platform that tells us nothing |
 | `MethodTest` (10) | That the published method still describes what the code computes, and that every published string is shown |
 
-Plus **19 instrumented tests** on a device, which exist because the
+Plus **21 instrumented tests** on a device, which exist because the
 alternative was worse: producing the refused, offline, stopped and failed
 states by hand needs a phone in airplane mode, a roaming SIM, a socket
 that fails on cue and forty seconds of patience per case. `MeasureContent`
@@ -226,10 +227,24 @@ than the requested one, that a request and its response cross, that an
 interim `100 Continue` is skipped rather than answered, and that a closed
 port is refused rather than hung.
 
-What remains untested is the edge itself: its real behaviour, its real
-latency, and anything that depends on which of its data centres answers.
-That cannot be tested honestly from here, and a test that mocked it
-would be testing the mock.
+**And the edge's contract is tested against the real edge.** I had
+written that the edge "cannot be tested honestly from here" because its
+latency and speed vary. That was too broad. A *performance figure*
+cannot be asserted — nobody knows what a phone on someone else's network
+will measure, and a test that asserted a number would fail for reasons
+unrelated to the code. But the edge's *shape* can be, and this app's
+method is built entirely on that shape:
+
+- `__down?bytes=N` answers 200 with `Content-Length: N` and exactly N
+  bytes, unchunked, at both ends of the size range
+- `__up` answers 200 with `Content-Length: 0`, and that empty reply is
+  the **success** — read as a failure, every upload would be reported as
+  refused
+- a large POST draws a `100 Continue` first, which is not the answer
+
+If Cloudflare changed any of that, the app would report the wrong thing
+and **nothing else in the suite would notice**. That is what those six
+tests are for. They skip rather than fail on a machine with no route.
 
 ---
 
@@ -264,6 +279,12 @@ imitating any particular product. The rules that actually shaped it:
   the app was invisible to a blind reader. The plot's description is
   generated from the measured numbers, so it cannot describe a watch that
   did not happen.
+- **The control speaks its cost.** The cost line and the list of
+  measurements are not focusable, so a screen reader walked straight past
+  "About 25 MB of mobile data" and stopped on a button labelled only
+  "Run test". The control now says *"Run test. About 25 MB of mobile
+  data."* — and when the connection cannot be used it says so, and stays
+  in the tree, rather than silently disappearing from it.
 
 **Portrait only**, deliberately. Every layout here is a single column
 built around a figure sized to a thumb's width; rotated, the content is
