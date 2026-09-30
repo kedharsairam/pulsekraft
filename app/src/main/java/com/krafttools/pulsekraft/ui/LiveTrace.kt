@@ -2,8 +2,8 @@ package com.krafttools.pulsekraft.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,21 +39,44 @@ import kotlin.math.abs
  * ceiling are pinned to the top edge and the trace is drawn hollow,
  * which says "off the scale" without a number nobody could read anyway.
  */
+/**
+ * The trace, sized by its container rather than by a constant.
+ *
+ * This is the hero of the running screen and it takes whatever height
+ * the layout gives it — most of the viewport. A strip 72dp tall on an
+ * 870dp screen is a chart in a letterbox, and a two-second transfer
+ * squeezed into a letterbox cannot be read at all: the whole point of
+ * the trace is that the *shape* is legible, and shape needs height.
+ */
 @Composable
 fun LiveTrace(
     values: List<Double>,
     ceiling: Double,
     lineColour: Color,
     modifier: Modifier = Modifier,
-    height: androidx.compose.ui.unit.Dp = 96.dp,
     label: String? = null,
     overCeiling: Boolean = false,
+    /**
+     * Plot the axis logarithmically.
+     *
+     * The same reasoning as the dial, and it was missed here first,
+     * which showed up immediately: a 22 Mbps upload on a linear
+     * 0-2000 plot is one percent of the height, so the trace sat on
+     * the floor with three quarters of the screen empty above it. The
+     * data was correct and the presentation made it look like nothing
+     * happened.
+     *
+     * Latency stays linear, because 0-200 ms is a narrow range where
+     * linear is the easier read and a log axis would exaggerate the
+     * jitter that matters.
+     */
+    logarithmic: Boolean = false,
 ) {
     Box(
-        modifier = modifier.fillMaxWidth().height(height),
+        modifier = modifier.fillMaxWidth(),
         contentAlignment = Alignment.TopStart,
     ) {
-        Canvas(modifier = Modifier.fillMaxWidth().height(height)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
             // The gridline at the ceiling, dashed so it reads as a bound
             // rather than as a measurement.
             val top = 2f
@@ -104,8 +127,13 @@ fun LiveTrace(
 
             fun pointAt(index: Int): Offset {
                 val v = smoothed[index]
-                val clamped = if (overCeiling) v.coerceAtMost(scale) else v.coerceAtLeast(0.0)
-                val fraction = (clamped / scale).coerceIn(0.0, 1.0).toFloat()
+                val clamped = if (overCeiling) v.coerceAtMost(scale) else v
+                val fraction = if (logarithmic) {
+                    kotlin.math.log10(1.0 + clamped.coerceAtLeast(0.0)) /
+                        kotlin.math.log10(1.0 + scale)
+                } else {
+                    clamped.coerceAtLeast(0.0) / scale
+                }.coerceIn(0.0, 1.0).toFloat()
                 return Offset(
                     x = index * stepX,
                     // Inverted: the top of the plot is the ceiling.
@@ -124,7 +152,7 @@ fun LiveTrace(
             drawPath(
                 path = area,
                 brush = Brush.verticalGradient(
-                    listOf(lineColour.copy(alpha = 0.18f), Color.Transparent),
+                    listOf(lineColour.copy(alpha = 0.10f), Color.Transparent),
                     startY = top,
                     endY = bottom,
                 ),
@@ -147,7 +175,7 @@ fun LiveTrace(
             // and a plateau is a different finding from a spike.
             if (overCeiling) {
                 smoothed.forEachIndexed { i, value ->
-                    if (value > scale) {
+                    if (value > scale * 1.0001) {
                         val p = pointAt(i)
                         drawCircle(
                             color = PulsePalette.Warning,
@@ -195,7 +223,10 @@ private const val WINDOW = 240
 /**
  * Readings averaged into each drawn point.
  *
- * Five at a 100 ms cadence is half a second, long enough to iron out a
- * buffer burst and short enough that a genuine stall still shows as one.
+ * Nine at a 100 ms cadence is most of a second — long enough that the
+ * socket-buffer bursts which make the raw rate bimodal read as a line
+ * rather than as a picket fence, and short enough that a genuine stall
+ * still shows as one. The data underneath is untouched; only the drawn
+ * line is smoothed.
  */
-private const val SMOOTHING = 5
+private const val SMOOTHING = 9
