@@ -1,18 +1,13 @@
 package com.krafttools.pulsekraft.net
 
-import com.krafttools.pulsekraft.core.Buffer
+import com.krafttools.pulsekraft.core.Bufferbloat
 import com.krafttools.pulsekraft.core.Latency
-import com.krafttools.pulsekraft.core.LatencySummary
-import com.krafttools.pulsekraft.core.Method
 import com.krafttools.pulsekraft.core.Profiles
-import com.krafttools.pulsekraft.core.Rate
-import com.krafttools.pulsekraft.core.RateSample
 import com.krafttools.pulsekraft.core.TestProfile
 import com.krafttools.pulsekraft.core.TestReport
-import com.krafttools.pulsekraft.core.TransferRejection
-import com.krafttools.pulsekraft.core.Throughput
 import com.krafttools.pulsekraft.core.Volume
 import java.util.Collections
+import kotlin.math.abs
 
 /** Which phase a probe is in, so the UI can say something truthful. */
 enum class Phase(val label: String) {
@@ -23,6 +18,45 @@ enum class Phase(val label: String) {
     STABILITY("Watching for spikes"),
     DONE("Done"),
 }
+
+/** Which way the live instrument is currently reading. */
+enum class Reading(val unit: String) {
+    LATENCY("ms"),
+    DOWNLOAD("Mbps"),
+    UPLOAD("Mbps"),
+    ;
+}
+
+/**
+ * What the live instrument should be showing at this instant.
+ *
+ * Emitted from a background thread, so anything that touches the screen
+ * has to hop to the main thread itself. It carries the whole series
+ * rather than a delta because a trace that only knows its last point
+ * cannot draw a line, and a gauge that only knows its current value
+ * cannot show a peak.
+ */
+data class LiveState(
+    val phase: Phase,
+    val reading: Reading,
+    /** The figure the instrument is pointing at now. */
+    val current: Double,
+    /** The series behind it, oldest first. */
+    val series: List<Double>,
+    /** The highest value seen so far in this phase. */
+    val peak: Double,
+    /**
+     * The top of the scale, fixed for the phase.
+     *
+     * Held constant rather than tracking the peak, because a scale that
+     * grows as the values grow makes a rising number look flat and a
+     * falling one look dramatic. A scale that moves is a scale that
+     * lies.
+     */
+    val scaleMax: Double,
+    /** Bytes moved so far, for the running total. Not on the dial. */
+    val bytesSoFar: Long,
+)
 
 /** What went wrong, in words a person can read. */
 data class ProbeFailure(val what: String, val why: String)
@@ -46,14 +80,13 @@ data class ProbeFailure(val what: String, val why: String)
  * There is no way to know the line's speed before measuring it, so the
  * connection opens with a buffer sized for a fast link. Once the first
  * transfer has happened the granted buffer is known, and
- * [Buffer.mayBeBufferLimited] compares it against what was measured. If
- * the figure is sitting on the ceiling this app was capable of, the
- * result screen says the number may be the app's limit rather than the
- * user's line.
+ * [com.krafttools.pulsekraft.core.Buffer.mayBeBufferLimited] compares it
+ * against what was measured. If the figure is sitting on the ceiling this
+ * app was capable of, the result screen says so rather than publishing a
+ * number the app itself produced.
  */
 class Probe(
     private val volume: Volume = Volume.LIGHT,
-    /** A generous ceiling to size the first buffer for, in bits per second. */
     private val assumeBps: Double = 1_000_000_000.0,
     private val assumedRttMs: Double = 40.0,
 ) {
@@ -62,8 +95,13 @@ class Probe(
 
     data class Result(val report: TestReport?, val failure: ProbeFailure?)
 
-    fun run(onPhase: (Phase) -> Unit = {}): Result = try {
-        Result(measure(onPhase), null)
+    private var lastStabilitySeries: List<Double> = emptyList()
+
+    fun run(
+        onPhase: (Phase) -> Unit = {},
+        onLive: (LiveState) -> Unit = {},
+    ): Result = try {
+        Result(measure(onPhase, onLive), null)
     } catch (e: TransportException) {
         Result(null, ProbeFailure("The test could not run", e.failure.explanation))
     } catch (e: InterruptedException) {
@@ -71,8 +109,10 @@ class Probe(
         Result(null, ProbeFailure("The test was cancelled", "it was stopped before it finished"))
     }
 
-    private fun measure(onPhase: (Phase) -> Unit): TestReport {
-        val bufferBytes = Buffer.suggestReceiveBuffer(assumeBps, assumedRttMs)
+    private fun measure(onPhase: (Phase) -> Unit, onLive: (LiveState) -> Unit): TestReport {
+        emitTo = onLive
+        val bufferBytes = com.krafttools.pulsekraft.core.Buffer
+            .suggestReceiveBuffer(assumeBps, assumedRttMs)
 
         onPhase(Phase.CONNECTING)
         val idle = MeasuredConnection().apply {
@@ -82,28 +122,37 @@ class Probe(
 
         try {
             onPhase(Phase.IDLE_LATENCY)
-            // A few samples are taken and thrown away first: the first
-            // request on a connection can pay for a cold route or a
-            // lazily-warmed TLS session, and that is not the line.
+            // A few samples are taken and thrown away first, and the
+            // reason is measured rather than assumed: on a real device
+            // the first eleven requests on a cold TLS connection took
+            // 400-2900 ms each and the twelfth onwards sat at 50-100 ms.
             val idleRtts = ArrayList<Double>(profile.idleSamples)
+            val live = ArrayList<Double>()
             repeat(profile.idleSamples + WARMUP_SAMPLES) { index ->
                 val rtt = oneRtt(idle)
-                if (rtt > 0 && index >= WARMUP_SAMPLES) idleRtts += rtt
-                // A gap between samples, not a burst. Sent back to back
-                // they arrive as a flood, and what came back included
-                // regular 300ms stalls that were the edge throttling us
-                // rather than the line being slow.
+                if (rtt > 0 && index >= WARMUP_SAMPLES) {
+                    idleRtts += rtt
+                    live += rtt
+                    emit(
+                        Phase.IDLE_LATENCY, Reading.LATENCY, rtt, live,
+                        live.max(), LIVE_LATENCY_SCALE, 0L,
+                    )
+                }
+                // A gap between samples, not a burst. Back to back they
+                // arrive as a flood, and what came back included regular
+                // 300 ms stalls that were the edge throttling us rather
+                // than the line being slow.
                 Thread.sleep(profile.sampleIntervalMillis)
             }
 
             onPhase(Phase.DOWNLOAD)
-            val down = transfer(Direction.DOWNLOAD, onPhase)
+            val down = transfer(Reading.DOWNLOAD, onPhase, onLive)
 
             onPhase(Phase.UPLOAD)
-            val up = transfer(Direction.UPLOAD, onPhase)
+            val up = transfer(Reading.UPLOAD, onPhase, onLive)
 
             onPhase(Phase.STABILITY)
-            val stability = watchStability(idle)
+            val stability = watchStability(idle, onLive)
 
             onPhase(Phase.DONE)
             return TestReport(
@@ -115,25 +164,43 @@ class Probe(
                 stability = stability,
                 volume = volume,
                 edgeHost = Edge.HOST,
-                protocolNote = Method.AGGREGATION,
+                protocolNote = com.krafttools.pulsekraft.core.Method.AGGREGATION,
                 grantedReceiveBufferBytes = granted,
                 rejectedBecause = down.rejection ?: up.rejection,
+                stabilitySeries = lastStabilitySeries,
             )
         } finally {
             idle.close()
         }
     }
 
-    private enum class Direction { DOWNLOAD, UPLOAD }
+    private var emitTo: (LiveState) -> Unit = {}
 
     private class TransferResult(
-        val throughput: Throughput?,
-        val loaded: LatencySummary?,
-        val rejection: Rejection?,
+        val throughput: com.krafttools.pulsekraft.core.Throughput?,
+        val loaded: com.krafttools.pulsekraft.core.LatencySummary?,
+        val rejection: com.krafttools.pulsekraft.core.TransferRejection?,
     )
 
-    private fun transfer(direction: Direction, onPhase: (Phase) -> Unit): TransferResult {
-        val bufferBytes = Buffer.suggestReceiveBuffer(assumeBps, assumedRttMs)
+    private fun emit(
+        phase: Phase,
+        reading: Reading,
+        current: Double,
+        series: List<Double>,
+        peak: Double,
+        scaleMax: Double,
+        bytes: Long,
+    ) {
+        runCatching {
+            emitTo(
+                LiveState(phase, reading, current, ArrayList(series), peak, scaleMax, bytes),
+            )
+        }
+    }
+
+    private fun transfer(reading: Reading, onPhase: (Phase) -> Unit, onLive: (LiveState) -> Unit): TransferResult {
+        val bufferBytes = com.krafttools.pulsekraft.core.Buffer
+            .suggestReceiveBuffer(assumeBps, assumedRttMs)
         val carrier = MeasuredConnection()
         carrier.connect(bufferBytes, CONNECT_TIMEOUT_MS, TRANSFER_TIMEOUT_MS)
         // The watcher is a second socket to the same edge. It is the
@@ -141,18 +208,21 @@ class Probe(
         val watcher = MeasuredConnection()
         watcher.connect(bufferBytes, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS)
 
-        val samples: MutableList<RateSample> = Collections.synchronizedList(ArrayList())
+        val samples: MutableList<com.krafttools.pulsekraft.core.RateSample> =
+            Collections.synchronizedList(ArrayList())
         val loadedRtts: MutableList<Double> = Collections.synchronizedList(ArrayList())
-        var rejection: TransferRejection? = null
+        val series = Collections.synchronizedList(ArrayList<Double>())
+        val phase = if (reading == Reading.DOWNLOAD) Phase.DOWNLOAD else Phase.UPLOAD
+        var rejection: com.krafttools.pulsekraft.core.TransferRejection? = null
 
         val worker = Thread({
             try {
-                rejection = when (direction) {
-                    Direction.DOWNLOAD -> download(carrier, samples)
-                    Direction.UPLOAD -> upload(carrier, samples)
+                rejection = when (reading) {
+                    Reading.DOWNLOAD -> download(carrier, samples, series, phase)
+                    else -> upload(carrier, samples, series, phase)
                 }
             } catch (e: java.io.IOException) {
-                rejection = TransferRejection.TIMED_OUT
+                rejection = com.krafttools.pulsekraft.core.TransferRejection.TIMED_OUT
             }
         }, "pulsekraft-transfer")
 
@@ -168,7 +238,7 @@ class Probe(
             worker.join(JOIN_TIMEOUT_MS)
             if (worker.isAlive) {
                 worker.interrupt()
-                rejection = TransferRejection.TIMED_OUT
+                rejection = com.krafttools.pulsekraft.core.TransferRejection.TIMED_OUT
             }
         } finally {
             carrier.close()
@@ -176,15 +246,51 @@ class Probe(
         }
 
         val throughput = if (rejection == null) {
-            Rate.fromSamples(samples, profile.graceMillis)
+            com.krafttools.pulsekraft.core.Rate.fromSamples(samples, profile.graceMillis)
         } else {
             null
         }
-        return TransferResult(throughput, Latency.summarise(loadedRtts.toList()), rejection)
+        return TransferResult(
+            throughput,
+            com.krafttools.pulsekraft.core.Latency.summarise(loadedRtts.toList()),
+            rejection,
+        )
     }
 
-    /** Returns null when the transfer was sound, or why it was not. */
-    private fun download(connection: MeasuredConnection, samples: MutableList<RateSample>): TransferRejection? {
+    /**
+     * Feeds the live instrument while a transfer runs.
+     *
+     * The instantaneous rate is the difference between the last two
+     * cumulative readings. That is the right thing to point a needle at
+     * and the wrong thing to report as a result, which is why the
+     * headline is the average over the window and this only ever moves
+     * the dial.
+     */
+    private fun publish(
+        phase: Phase,
+        reading: Reading,
+        samples: List<com.krafttools.pulsekraft.core.RateSample>,
+        series: MutableList<Double>,
+    ) {
+        if (samples.size < 2) return
+        val last = samples[samples.size - 1]
+        val previous = samples[samples.size - 2]
+        val nanos = last.atNanos - previous.atNanos
+        if (nanos <= 0L || last.bytes < previous.bytes) return
+        val instant = com.krafttools.pulsekraft.core.Rate.mbpsFromNanos(
+            last.bytes - previous.bytes, nanos,
+        )
+        if (instant <= 0.0) return
+        series += instant
+        emit(phase, reading, instant, series, series.max(), LIVE_THROUGHPUT_SCALE, last.bytes)
+    }
+
+    private fun download(
+        connection: MeasuredConnection,
+        samples: MutableList<com.krafttools.pulsekraft.core.RateSample>,
+        series: MutableList<Double>,
+        phase: Phase,
+    ): com.krafttools.pulsekraft.core.TransferRejection? {
         val head = connection.sendHead("GET", Edge.downloadPath(profile.targetBytes))
         val began = System.nanoTime()
         val deadline = System.nanoTime() +
@@ -193,14 +299,16 @@ class Probe(
             connection.readBody(
                 head = head,
                 onProgress = { total ->
-                    samples.add(RateSample(System.nanoTime() - began, total))
+                    samples.add(
+                        com.krafttools.pulsekraft.core.RateSample(
+                            System.nanoTime() - began, total,
+                        ),
+                    )
+                    publish(phase, Reading.DOWNLOAD, samples, series)
                 },
                 stopAtNanos = deadline,
             )
         } catch (e: java.io.IOException) {
-            // Logged rather than swallowed: "it timed out" is not a
-            // diagnosis, and how much arrived before it did is the first
-            // thing anyone would ask.
             android.util.Log.e(
                 "PulseKraftProbe",
                 "download failed after ${(System.nanoTime() - began) / 1_000_000}ms " +
@@ -216,8 +324,12 @@ class Probe(
             "download ${counter.bytes} bytes in ${elapsed}ms, " +
                 "${samples.size} samples, stoppedEarly=${counter.stoppedEarly}",
         )
-        samples.add(RateSample(System.nanoTime() - began, counter.bytes))
-        return TransferCheck.reject(
+        samples.add(
+            com.krafttools.pulsekraft.core.RateSample(
+                System.nanoTime() - began, counter.bytes,
+            ),
+        )
+        return com.krafttools.pulsekraft.net.TransferCheck.reject(
             head = head,
             received = counter.bytes,
             timedOut = false,
@@ -225,7 +337,12 @@ class Probe(
         )
     }
 
-    private fun upload(connection: MeasuredConnection, samples: MutableList<RateSample>): TransferRejection? {
+    private fun upload(
+        connection: MeasuredConnection,
+        samples: MutableList<com.krafttools.pulsekraft.core.RateSample>,
+        series: MutableList<Double>,
+        phase: Phase,
+    ): com.krafttools.pulsekraft.core.TransferRejection? {
         // One buffer, filled once, written repeatedly. Allocating a fresh
         // multi-megabyte array per chunk would put the garbage collector
         // inside the measurement — which is precisely how a client ends
@@ -234,30 +351,16 @@ class Probe(
         // NOT time-boxed, and the reason is worth recording because the
         // attempt was made and reverted.
         //
-        // The download can be stopped at a deadline because the bytes
-        // already arrived and the connection is simply closed. An
-        // upload cannot: Content-Length is a promise made before the
-        // body, so stopping early leaves the edge waiting for bytes that
-        // will never come and the transfer hangs until it times out. A
-        // version that declared 25 MB and then stopped on a 3.5 second
-        // clock did exactly that, and reported "the transfer did not
-        // finish" for a transfer that was never going to.
+        // The download can be stopped at a deadline: the bytes already
+        // arrived and the connection is simply closed. An upload cannot.
+        // Content-Length is a promise made before the body, so stopping
+        // early leaves the edge waiting for bytes that never come and the
+        // transfer hangs. A version that declared 25 MB and then stopped
+        // on a 3.5 second clock did exactly that.
         //
-        // Making the upload time-boxed needs chunked transfer encoding,
-        // where the length is not declared in advance. That is not built
-        // yet, so the upload is bounded by bytes alone. The cost is
-        // visible: a 10 Mbps upstream line takes twenty seconds to move
-        // 25 MB, and the app says so rather than pretending otherwise.
-        // Head first, then the body, and only then the response. This
-        // order is the whole upload: an edge will not answer a POST until
-        // the body has arrived, so a client that waits for the answer
-        // first waits forever. The first version did, and every upload
-        // timed out.
-        // The body length has to be declared up front, and it has to be
-        // what we actually send. A short body against a long
-        // Content-Length leaves the edge waiting, and a long one leaves
-        // it hanging up — so the transfer stops on whichever bound binds
-        // first and the length sent is recomputed from the byte cap.
+        // Time-boxing the upload needs chunked transfer encoding, where
+        // the length is not declared in advance. Not built yet, so the
+        // upload is bounded by bytes alone, and the cost is visible.
         val declared = minOf(profile.targetBytes, UPLOAD_HARD_CAP)
         connection.writeRequest("POST", Edge.UPLOAD_PATH, declared)
         val began = System.nanoTime()
@@ -266,7 +369,12 @@ class Probe(
             val chunk = minOf(payload.size.toLong(), declared - sent).toInt()
             connection.writeBody(payload, chunk)
             sent += chunk
-            samples.add(RateSample(System.nanoTime() - began, sent))
+            samples.add(
+                com.krafttools.pulsekraft.core.RateSample(
+                    System.nanoTime() - began, sent,
+                ),
+            )
+            publish(phase, Reading.UPLOAD, samples, series)
         }
         connection.flush()
         val head = connection.readResponseHead()
@@ -279,7 +387,7 @@ class Probe(
             "upload $sent bytes in ${(System.nanoTime() - began) / 1_000_000}ms, " +
                 "status=${head.statusCode}",
         )
-        return TransferCheck.reject(
+        return com.krafttools.pulsekraft.net.TransferCheck.reject(
             head = head,
             received = received,
             timedOut = false,
@@ -290,10 +398,16 @@ class Probe(
     /**
      * One round trip on an already-open connection.
      *
-     * The elapsed time is measured around the body read rather than the
-     * head read, because the head has usually already arrived by the
-     * time a keep-alive request is written. Returns -1 rather than
-     * throwing, so a single lost sample does not end a run.
+     * The elapsed time is measured around the whole exchange, not just
+     * the body. The head is read as part of sending, and on a keep-alive
+     * connection it has usually already arrived by the time the request
+     * bytes are flushed — so timing only the body measured the time to
+     * lift one byte out of an already-full socket buffer and reported it
+     * as the round trip. That is how the first real run reported an idle
+     * latency of 0 ms on a connection to Singapore.
+     *
+     * Returns -1 rather than throwing, so one lost sample does not end a
+     * run.
      */
     private fun oneRtt(connection: MeasuredConnection): Double {
         val timed = runCatching { connection.timedExchange(Edge.LATENCY_PATH) }
@@ -302,14 +416,26 @@ class Probe(
         return if (millis > 0.0) millis else -1.0
     }
 
-    private fun watchStability(connection: MeasuredConnection): Latency.Stability? {
+    private fun watchStability(connection: MeasuredConnection, onLive: (LiveState) -> Unit): Latency.Stability? {
         val samples = ArrayList<Double>()
+        val series = ArrayList<Double>()
+        // Bounded. A stability watch that runs for a fixed number of
+        // seconds cannot grow without limit, but the list is what
+        // travels to the screen afterwards, and that one does.
         val until = System.currentTimeMillis() + profile.stabilitySeconds * 1000L
         while (System.currentTimeMillis() < until) {
             val rtt = oneRtt(connection)
-            if (rtt > 0) samples += rtt
+            if (rtt > 0) {
+                samples += rtt
+                series += rtt
+                emit(
+                    Phase.STABILITY, Reading.LATENCY, rtt, series,
+                    series.max(), LIVE_LATENCY_SCALE, 0L,
+                )
+            }
             Thread.sleep(profile.sampleIntervalMillis)
         }
+        lastStabilitySeries = series.toList()
         return Latency.stability(samples)
     }
 
@@ -328,30 +454,40 @@ class Probe(
         /**
          * What the edge will accept in one POST, and the number the
          * request declares up front.
-         *
-         * A Content-Length is a promise. If we declare 26 MB and then
-         * stop early on the clock, the edge keeps waiting for bytes that
-         * will never arrive and the transfer hangs rather than
-         * finishing. Declaring the smaller cap and stopping on whichever
-         * bound binds first keeps the promise true either way.
          */
         const val UPLOAD_HARD_CAP = 25L * 1024 * 1024
+
         /**
          * Samples discarded at the start of a connection.
          *
          * Not a fudge. A freshly opened TLS connection is not the line:
          * the congestion window is cold, the route may be resolving, and
          * the first requests on a new path are slow for reasons that
-         * have nothing to do with steady-state capacity.
-         *
-         * Measured on a real device, the first eleven requests on a cold
-         * connection took 400-2900 ms each, and the twelfth onwards sat
-         * at 50-100 ms. Three discarded samples left the median at
-         * 1637 ms on a path whose true round trip is about 20. Ten
-         * leaves the settled behaviour, and the count is a stated rule
-         * applied identically to every run rather than a filter chosen
-         * to flatter.
+         * have nothing to do with steady-state capacity. Ten leaves the
+         * settled behaviour, and the count is a stated rule applied
+         * identically to every run rather than a filter chosen to
+         * flatter.
          */
         const val WARMUP_SAMPLES = 10
+
+        /**
+         * The top of the live scale, in Mbps, fixed for the whole run.
+         *
+         * Deliberately fixed, because a scale that adapts to the values
+         * makes a rising number look flat and a falling one look
+         * dramatic, and an instrument whose scale moves under the
+         * needle is lying about the reading.
+         *
+         * The dial plots this logarithmically, so three decades fit
+         * legibly: a 5 Mbps line sits near the bottom, a 100 Mbps line
+         * near the middle, and a 1 Gbps line near the top. On a linear
+         * dial the first would be at one percent and invisible, and a
+         * measured peak of 1956 Mbps would sit off the end pretending
+         * to be 600.
+         */
+        const val LIVE_THROUGHPUT_SCALE = 2_000.0
+
+        /** And in ms, on the same reasoning. */
+        const val LIVE_LATENCY_SCALE = 200.0
     }
 }

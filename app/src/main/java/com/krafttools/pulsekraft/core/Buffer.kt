@@ -179,6 +179,19 @@ data class TestReport(
     val grantedReceiveBufferBytes: Int = 0,
     /** Set when a transfer was refused or cut short. Null when sound. */
     val rejectedBecause: TransferRejection? = null,
+    /**
+     * The latency samples from the stability watch, in order.
+     *
+     * Carried so the result screen can draw the trace that produced the
+     * verdict. A verdict of "spiky" with nothing to look at is a
+     * conclusion the user is asked to take on trust, and this app does
+     * not ask for that anywhere else — a number without its shape is
+     * the wall-of-text problem wearing a chart's clothes.
+     *
+     * Bounded at the source, because an unbounded sample list on a phone
+     * is a slow leak.
+     */
+    val stabilitySeries: List<Double> = emptyList(),
 ) {
     /**
      * Whether the download figure may be this app's buffer rather than
